@@ -1,0 +1,93 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function myProfile() {
+      return get(/databases/$(database)/documents/users/$(request.auth.uid)).data;
+    }
+
+    function isAdmin() {
+      return isSignedIn()
+        && exists(/databases/$(database)/documents/users/$(request.auth.uid))
+        && myProfile().role == 'admin';
+    }
+
+    function isSelf(uid) {
+      return isSignedIn() && request.auth.uid == uid;
+    }
+
+    // 系统启动锁：用于"首次使用自动创建管理员"。
+    // 这个文档一旦被创建，就代表管理员账号已经建立，之后任何人都不能再通过引导流程创建新的管理员。
+    match /meta/adminBootstrap {
+      allow get: if true;
+      allow create: if isSignedIn() && request.resource.data.claimedBy == request.auth.uid;
+      allow update: if false;
+      allow delete: if false;
+    }
+
+    // 用户名 -> 登录邮箱 的映射，用于「用户名 + 密码」登录（Firebase Auth 底层仍然是邮箱）。
+    // 文档 ID 就是用户名（小写），本身具有唯一性：同名用户名无法被第二次创建。
+    // 允许未登录状态下读取，因为登录前需要先查出对应的邮箱才能调用 signInWithEmailAndPassword。
+    match /usernames/{username} {
+      allow get: if true;
+      allow create: if isAdmin() || (
+        isSignedIn() &&
+        request.resource.data.uid == request.auth.uid &&
+        !exists(/databases/$(database)/documents/meta/adminBootstrap)
+      );
+      allow update: if false;
+      allow delete: if isAdmin();
+    }
+
+    // 用户档案（姓名、角色、时薪、是否可查看薪酬、账号状态）
+    match /users/{uid} {
+      allow read: if isSelf(uid) || isAdmin();
+      // 管理员可以随时创建员工档案；
+      // 或者：当系统里还没有任何管理员时（adminBootstrap 锁不存在），
+      // 任何刚注册的账号都可以给自己创建一个 role == 'admin' 的档案（仅此一次）。
+      allow create: if isAdmin() || (
+        isSignedIn() &&
+        request.auth.uid == uid &&
+        request.resource.data.role == 'admin' &&
+        !exists(/databases/$(database)/documents/meta/adminBootstrap)
+      );
+      allow update: if isAdmin() || (
+        isSelf(uid) &&
+        request.resource.data.role == resource.data.role &&
+        request.resource.data.hourlyWage == resource.data.hourlyWage &&
+        request.resource.data.canViewWage == resource.data.canViewWage &&
+        request.resource.data.status == resource.data.status
+      );
+      allow delete: if isAdmin();
+    }
+
+    // 每日工时记录
+    match /timeRecords/{recordId} {
+      allow read: if isAdmin() || (isSignedIn() && resource.data.uid == request.auth.uid);
+
+      allow create: if isSignedIn()
+        && request.resource.data.uid == request.auth.uid
+        && request.resource.data.status == 'pending';
+
+      // 员工只能在记录仍为 pending 时修改自己的记录，且不能改动状态
+      allow update: if isAdmin() || (
+        isSignedIn()
+        && resource.data.uid == request.auth.uid
+        && resource.data.status == 'pending'
+        && request.resource.data.status == 'pending'
+        && request.resource.data.uid == request.auth.uid
+      );
+
+      allow delete: if isAdmin() || (
+        isSignedIn()
+        && resource.data.uid == request.auth.uid
+        && resource.data.status == 'pending'
+      );
+    }
+  }
+}
