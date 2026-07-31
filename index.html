@@ -7,7 +7,7 @@
 
 <!-- PWA：可以在 iOS Safari 里「添加到主屏幕」，获得接近原生 App 的图标、启动画面和全屏体验 -->
 <link rel="manifest" href="manifest.json" />
-<meta name="theme-color" content="#4f46e5" />
+<meta name="theme-color" content="#6253d4" />
 <meta name="apple-mobile-web-app-capable" content="yes" />
 <meta name="mobile-web-app-capable" content="yes" />
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
@@ -48,6 +48,10 @@
 <link rel="modulepreload" href="js/utils.js" />
 <link rel="modulepreload" href="js/employee.js" />
 <link rel="modulepreload" href="js/admin.js" />
+<!-- 品牌字体（Plus Jakarta Sans），加载失败时自动回退到系统字体，不影响使用 -->
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@500;600;700;800&display=swap" />
 <link rel="stylesheet" href="css/style.css" />
 </head>
 <body>
