@@ -70,9 +70,13 @@ service cloud.firestore {
     match /timeRecords/{recordId} {
       allow read: if isAdmin() || (isSignedIn() && resource.data.uid == request.auth.uid);
 
-      allow create: if isSignedIn()
+      // 管理员可以直接给任意员工补录一条记录（状态随意，比如直接建成 approved）；
+      // 员工自己提交的只能是自己名下、状态为 pending 的记录。
+      allow create: if isAdmin() || (
+        isSignedIn()
         && request.resource.data.uid == request.auth.uid
-        && request.resource.data.status == 'pending';
+        && request.resource.data.status == 'pending'
+      );
 
       // 员工只能在记录仍为 pending 时修改自己的记录，且不能改动状态
       allow update: if isAdmin() || (
@@ -83,11 +87,22 @@ service cloud.firestore {
         && request.resource.data.uid == request.auth.uid
       );
 
+      // 员工可以撤回自己还在 pending 或已被 rejected 的记录（撤回后可以在报告页重新提交同一天）；
+      // 已 approved 的记录员工不能自行删除，只能由管理员处理。
       allow delete: if isAdmin() || (
         isSignedIn()
         && resource.data.uid == request.auth.uid
-        && resource.data.status == 'pending'
+        && (resource.data.status == 'pending' || resource.data.status == 'rejected')
       );
+    }
+
+    // 薪酬支付记录：管理员给员工发放工资时，记一笔金额+日期（可以是部分支付，也可以是全额结清）。
+    // 员工只能读自己的支付记录（用来核对已付/未付），不能新增/修改/删除——发放薪酬只能由管理员操作。
+    match /payments/{paymentId} {
+      allow read: if isAdmin() || (isSignedIn() && resource.data.uid == request.auth.uid);
+      allow create: if isAdmin();
+      allow update: if isAdmin();
+      allow delete: if isAdmin();
     }
   }
 }

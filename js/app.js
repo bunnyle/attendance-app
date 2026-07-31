@@ -141,10 +141,6 @@ function renderBootstrap() {
         <input type="text" id="bs-username" autocomplete="username" autocapitalize="none" />
       </div>
       <div class="field">
-        <label>${t("bootstrap.email")}</label>
-        <input type="email" id="bs-email" placeholder="you@example.com" />
-      </div>
-      <div class="field">
         <label>${t("bootstrap.password")}</label>
         <input type="password" id="bs-password" placeholder="••••••••" autocomplete="new-password" />
         <div class="hint">${t("bootstrap.passwordHint")}</div>
@@ -157,7 +153,6 @@ function renderBootstrap() {
 
   const nameEl = document.getElementById("bs-name");
   const usernameEl = document.getElementById("bs-username");
-  const emailEl = document.getElementById("bs-email");
   const pwEl = document.getElementById("bs-password");
   const errEl = document.getElementById("bs-error");
   const btn = document.getElementById("bs-btn");
@@ -166,7 +161,7 @@ function renderBootstrap() {
 
   btn.addEventListener("click", async () => {
     errEl.textContent = "";
-    if (!nameEl.value.trim() || !usernameEl.value.trim() || !emailEl.value.trim() || !pwEl.value) {
+    if (!nameEl.value.trim() || !usernameEl.value.trim() || !pwEl.value) {
       errEl.textContent = t("bootstrap.errorMissing");
       return;
     }
@@ -180,7 +175,6 @@ function renderBootstrap() {
       await createFirstAdmin({
         name: nameEl.value,
         username: usernameEl.value,
-        email: emailEl.value,
         password: pwEl.value
       });
       showToast(t("bootstrap.success"));
@@ -260,3 +254,13 @@ watchAuthState(async (user) => {
     showToast(t("error.loadFailed", { msg: err.message || err }));
   }
 });
+
+// 注册 Service Worker：让「添加到主屏幕」后的应用有离线外壳缓存和更快的二次启动速度。
+// 只缓存本站自己的静态文件，不影响 Firebase 的实时数据请求。
+if ("serviceWorker" in navigator) {
+  window.addEventListener("load", () => {
+    navigator.serviceWorker.register("./sw.js").catch((err) => {
+      console.warn("Service worker registration failed:", err);
+    });
+  });
+}

@@ -6,3 +6,9 @@
   [headers.values]
     X-Frame-Options = "DENY"
     X-Content-Type-Options = "nosniff"
+
+# sw.js 不缓存，保证每次部署新版本后浏览器都能及时发现更新，不会被旧的 service worker 卡住
+[[headers]]
+  for = "/sw.js"
+  [headers.values]
+    Cache-Control = "no-cache"

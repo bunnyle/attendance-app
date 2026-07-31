@@ -1,0 +1,19 @@
+{
+  "appId": "com.attendanceapp.tracker",
+  "appName": "Attendance",
+  "webDir": "www",
+  "server": {
+    "iosScheme": "https"
+  },
+  "ios": {
+    "contentInset": "always",
+    "backgroundColor": "#4338ca"
+  },
+  "plugins": {
+    "SplashScreen": {
+      "launchShowDuration": 800,
+      "backgroundColor": "#4338ca",
+      "showSpinner": false
+    }
+  }
+}

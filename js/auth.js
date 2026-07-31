@@ -14,8 +14,29 @@ import {
 import { t } from "./i18n.js";
 import { normalizeUsername } from "./utils.js";
 
-// 用户名登录时用不到真实邮箱，但 Firebase Auth 内部仍然要求一个邮箱格式的标识。
-// 流程：先按用户名查出对应邮箱（usernames/{username} -> email），再用邮箱+密码登录。
+// Firebase Auth 的邮箱/密码登录方式底层必须要有一个邮箱格式的标识，
+// 但这个系统完全不使用真实邮箱——直接用用户名拼一个内部专用、不会真的发信的地址。
+// 这样管理员和员工都只需要记用户名，界面上完全看不到、也不用填邮箱。
+const INTERNAL_EMAIL_DOMAIN = "users.attendance-app.internal";
+
+// 只用来查东西时（不注册新账号），从用户名反推出「最初那个」内部邮箱的样子。
+// 登录时其实不用这个函数——登录是直接读 usernames/{username} 文档里存的 email 字段
+// （见下面 resolveUsernameToEmail），那个字段会跟着「重置密码」的迁移一起更新，两者不冲突。
+export function internalEmailFor(username) {
+  return `${normalizeUsername(username)}@${INTERNAL_EMAIL_DOMAIN}`;
+}
+
+// 每次「新注册一个 Auth 账号」都用这个：邮箱带时间戳后缀，保证全局唯一，不会跟任何已存在的
+// （包括已经被删除账号、但 Auth 端仍然残留的）邮箱撞车。
+// 背景：Firebase 客户端 SDK 没法删除别人的 Auth 账号，所以「删除员工」「重置密码」这些操作
+// 都只能在 Firestore 端清理，Auth 端的旧账号会一直留着；如果新账号还用回原来固定不变的邮箱
+// （比如单纯 用户名@域名），一旦这个用户名之前被用过、又删掉重建，就会撞上残留的旧 Auth 账号，
+// 报 auth/email-already-in-use。带时间戳后缀从根源上避免这个问题。
+export function newInternalEmail(username) {
+  return `${normalizeUsername(username)}.${Date.now()}@${INTERNAL_EMAIL_DOMAIN}`;
+}
+
+// 用户名登录：先按用户名查出对应的（内部）邮箱，再用邮箱+密码登录。
 export async function resolveUsernameToEmail(username) {
   const uname = normalizeUsername(username);
   if (!uname) return null;
@@ -69,9 +90,10 @@ export async function adminAlreadyExists() {
   return snap.exists();
 }
 
-// 创建第一个管理员账号：注册 Auth 账号 -> 落用户名映射 -> 写入 users 档案(role: admin) -> 落下 bootstrap 锁
-export async function createFirstAdmin({ name, username, email, password }) {
+// 创建第一个管理员账号：注册 Auth 账号（用内部邮箱）-> 落用户名映射 -> 写入 users 档案(role: admin) -> 落下 bootstrap 锁
+export async function createFirstAdmin({ name, username, password }) {
   const uname = normalizeUsername(username);
+  const email = newInternalEmail(uname);
 
   // 先检查用户名是否已被占用，避免白白创建一个没有档案的 Auth 账号
   const existing = await getDoc(doc(db, "usernames", uname));
@@ -81,20 +103,19 @@ export async function createFirstAdmin({ name, username, email, password }) {
     throw err;
   }
 
-  const cred = await createUserWithEmailAndPassword(auth, email.trim(), password);
+  const cred = await createUserWithEmailAndPassword(auth, email, password);
   const uid = cred.user.uid;
 
   // 用户名映射必须先落，因为 users/{uid} 的 bootstrap 分支和它没有强绑定顺序要求，
   // 但如果用户名已被占用，这里会因为「create-only」规则而失败，从而中止整个流程。
   await setDoc(doc(db, "usernames", uname), {
     uid,
-    email: email.trim()
+    email
   });
 
   await setDoc(doc(db, "users", uid), {
     name: name.trim(),
     username: uname,
-    email: email.trim(),
     role: "admin",
     hourlyWage: 0,
     canViewWage: true,
@@ -123,7 +144,8 @@ export function authErrorMessage(err) {
     "auth/email-already-in-use": t("error.emailInUse"),
     "auth/weak-password": t("error.weakPassword"),
     "auth/requires-recent-login": t("error.requiresRecentLogin"),
-    "username-taken": t("modal.usernameTaken")
+    "username-taken": t("modal.usernameTaken"),
+    "cannot-reset-self": t("modal.cannotResetSelf")
   };
   return map[code] || (err && err.message) || t("error.unknown");
 }
