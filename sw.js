@@ -2,7 +2,9 @@
 // 让应用在 iOS 上「添加到主屏幕」后启动更快、弱网/离线时也能打开界面。
 // 完全不拦截 Firebase/Firestore 等跨域请求——数据永远走网络，保证考勤数据实时准确。
 
-const CACHE_NAME = "attendance-app-v1";
+// 每次有明显的功能性更新（不只是样式微调）时手动把这个版本号 +1，
+// 这样旧设备上缓存住的老版本 JS 会在下次打开时被强制清掉，不会一直卡在过时的逻辑上。
+const CACHE_NAME = "attendance-app-v2";
 
 const APP_SHELL = [
   "./",

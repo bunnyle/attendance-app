@@ -213,7 +213,7 @@ async function createRecordForEmployee({ uid, employeeName, date, startTime, end
 
 // 使用「第二个 Firebase App 实例」创建账号（员工或管理员），避免影响当前管理员的登录态。
 // 系统完全不使用真实邮箱：用用户名自动生成一个内部专用、界面上看不到的登录邮箱。
-async function createAccount({ name, username, password, role, hourlyWage, canViewWage }) {
+async function createAccount({ name, username, password, role, hourlyWage, canViewWage, fullName, zelleAccount }) {
   const uname = normalizeUsername(username);
   const email = newInternalEmail(uname);
 
@@ -244,6 +244,8 @@ async function createAccount({ name, username, password, role, hourlyWage, canVi
       role: role === "admin" ? "admin" : "employee",
       hourlyWage: Number(hourlyWage) || 0,
       canViewWage: !!canViewWage,
+      fullName: (fullName || "").trim(),
+      zelleAccount: (zelleAccount || "").trim(),
       status: "active",
       createdAt: serverTimestamp()
     });
@@ -330,6 +332,8 @@ async function resetEmployeePassword(account, newPassword) {
         role: account.role,
         hourlyWage: account.hourlyWage,
         canViewWage: account.canViewWage,
+        fullName: account.fullName,
+        zelleAccount: account.zelleAccount,
         status: account.status
       };
 
@@ -692,6 +696,16 @@ function openEmployeeModal(account, refreshEl, profile) {
           <label>${t("modal.wage")}</label>
           <input id="m-wage" type="number" min="0" step="0.5" value="${isEdit ? account.hourlyWage || 0 : 0}" />
         </div>
+        <div class="field">
+          <label>${t("modal.fullName")}</label>
+          <input id="m-fullname" value="${isEdit ? escapeHtml(account.fullName || "") : ""}" />
+          <div class="hint">${t("modal.fullNameHint")}</div>
+        </div>
+        <div class="field">
+          <label>${t("modal.zelleAccount")}</label>
+          <input id="m-zelle" value="${isEdit ? escapeHtml(account.zelleAccount || "") : ""}" placeholder="name@email.com / 555-123-4567" />
+          <div class="hint">${t("modal.zelleAccountHint")}</div>
+        </div>
         <div class="switch-row">
           <span class="label-text">${t("modal.allowViewWage")}</span>
           <label class="switch">
@@ -796,6 +810,8 @@ function openEmployeeModal(account, refreshEl, profile) {
     const wage = document.getElementById("m-wage").value;
     const canView = document.getElementById("m-canview").checked;
     const role = document.getElementById("m-role").value;
+    const fullName = document.getElementById("m-fullname").value.trim();
+    const zelleAccount = document.getElementById("m-zelle").value.trim();
 
     if (!name) {
       errEl.textContent = t("modal.nameRequired");
@@ -812,7 +828,9 @@ function openEmployeeModal(account, refreshEl, profile) {
           hourlyWage: Number(wage) || 0,
           canViewWage: canView,
           role: isSelf ? account.role : role,
-          status: active ? "active" : "disabled"
+          status: active ? "active" : "disabled",
+          fullName,
+          zelleAccount
         });
         showToast(t("modal.saved"));
       } else {
@@ -830,7 +848,7 @@ function openEmployeeModal(account, refreshEl, profile) {
           btn.textContent = t("modal.create");
           return;
         }
-        await createAccount({ name, username, password, role, hourlyWage: wage, canViewWage: canView });
+        await createAccount({ name, username, password, role, hourlyWage: wage, canViewWage: canView, fullName, zelleAccount });
         showToast(t("modal.created"));
       }
       root.innerHTML = "";
@@ -889,16 +907,67 @@ async function renderRecordsTab(el, profile) {
   }
 }
 
+// 按选定月份把「按员工」汇总导出成 Excel，方便老板直接拿去对着 Zelle 转账。
+// SheetJS 通过 CDN 按需加载（index.html 里 <script defer>），这里只在真正点击导出时才检查是否加载完成，
+// 避免因为脚本还没下载完/被浏览器拦截而卡住整个页面。
+function exportPayrollExcel(rows, month) {
+  if (typeof XLSX === "undefined") {
+    showToast(t("allRecords.exportNoData"));
+    return;
+  }
+  const withHours = rows.filter((r) => r.hours > 0);
+  if (withHours.length === 0) {
+    showToast(t("allRecords.exportNoData"));
+    return;
+  }
+
+  const header = [
+    t("allRecords.exportColName"),
+    t("allRecords.exportColFullName"),
+    t("allRecords.exportColZelle"),
+    t("allRecords.exportColHours"),
+    t("allRecords.exportColAmount")
+  ];
+  const body = withHours.map((r) => [
+    r.name,
+    r.fullName,
+    r.zelleAccount,
+    Number(formatHours(r.hours)),
+    Number(r.pay.toFixed(2))
+  ]);
+
+  const ws = XLSX.utils.aoa_to_sheet([header, ...body]);
+  ws["!cols"] = [{ wch: 16 }, { wch: 18 }, { wch: 22 }, { wch: 10 }, { wch: 12 }];
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, t("allRecords.exportSheetName"));
+  XLSX.writeFile(wb, `payroll-${month}.xlsx`);
+  showToast(t("allRecords.exportDone"));
+}
+
 function renderByEmployeeSubTab(el, outerEl, profile, all, employees, empMap, initialMonth) {
   el.innerHTML = `
-    <div class="field">
-      <label>${t("allRecords.filterMonth")}</label>
-      <input type="month" id="filter-month" value="${initialMonth}" />
+    <div class="field-row" style="align-items:center; margin-bottom:0;">
+      <div class="filter-bar">
+        <span class="filter-icon">📅</span>
+        <div class="filter-text">
+          <label>${t("allRecords.filterMonth")}</label>
+          <input type="month" id="filter-month" value="${initialMonth}" />
+        </div>
+      </div>
+      <button class="btn btn-secondary" id="export-excel-btn" style="width:auto; white-space:nowrap;">📤 ${t("allRecords.exportButton")}</button>
     </div>
     <div id="by-employee-list"></div>
   `;
 
+  let currentRows = [];
+  let currentMonth = initialMonth;
+
+  el.querySelector("#export-excel-btn").addEventListener("click", () => {
+    exportPayrollExcel(currentRows, currentMonth);
+  });
+
   function render(m) {
+    currentMonth = m;
     const monthRecords = all.filter((r) => r.date.startsWith(m));
     const byUid = {};
     monthRecords
@@ -918,11 +987,14 @@ function renderByEmployeeSubTab(el, outerEl, profile, all, employees, empMap, in
       .map((emp) => ({
         uid: emp.id,
         name: emp.name || emp.username,
+        fullName: emp.fullName || emp.name || emp.username,
+        zelleAccount: emp.zelleAccount || "",
         hours: byUid[emp.id] || 0,
         pay: (byUid[emp.id] || 0) * (emp.hourlyWage || 0),
         pending: pendingByUid[emp.id] || 0
       }))
       .sort((a, b) => b.hours - a.hours || a.name.localeCompare(b.name));
+    currentRows = rows;
 
     const listEl = el.querySelector("#by-employee-list");
     if (rows.length === 0) {
@@ -984,9 +1056,12 @@ function renderByEmployeeSubTab(el, outerEl, profile, all, employees, empMap, in
 function renderByDaySubTab(el, outerEl, profile, all, employees, empMap) {
   const initialDate = todayStr();
   el.innerHTML = `
-    <div class="field">
-      <label>${t("allRecords.filterDate")}</label>
-      <input type="date" id="filter-date" value="${initialDate}" max="${todayStr()}" />
+    <div class="filter-bar">
+      <span class="filter-icon">📅</span>
+      <div class="filter-text">
+        <label>${t("allRecords.filterDate")}</label>
+        <input type="date" id="filter-date" value="${initialDate}" max="${todayStr()}" />
+      </div>
     </div>
     <div id="day-summary"></div>
     <div class="section-title">${t("allRecords.workedTitle")}</div>
