@@ -31,6 +31,9 @@ import {
   dateRangeDays,
   daysAgoStr,
   todayStr,
+  startOfWeekStr,
+  endOfWeekStr,
+  monthBounds,
   renderBarChartSVG,
   skeletonRows
 } from "./utils.js";
@@ -373,8 +376,8 @@ function recordCardHtml(r, { withApproveReject }) {
       ${
         showApproveReject
           ? `<div class="record-actions">
-              <button class="btn btn-success btn-small approve-btn">${t("approvals.approve")}</button>
-              <button class="btn btn-danger btn-small reject-btn">${t("approvals.reject")}</button>
+              <button class="btn btn-success btn-small approve-btn">✓ ${t("approvals.approve")}</button>
+              <button class="btn btn-danger btn-small reject-btn">✕ ${t("approvals.reject")}</button>
             </div>`
           : ""
       }
@@ -573,9 +576,16 @@ function openRecordEditModal(record, onSaved) {
 async function renderApprovalsTab(el, profile) {
   el.innerHTML = skeletonRows();
   const pending = await fetchPendingRecords();
+  const peopleCount = new Set(pending.map((r) => r.uid)).size;
+  const totalHours = pending.reduce((s, r) => s + (r.workedHours || 0), 0);
 
   el.innerHTML = `
-    <div class="section-title">${t("approvals.title", { count: pending.length })}</div>
+    <div class="summary-grid" style="margin-bottom:16px;">
+      <div class="summary-box"><div class="icon">⏳</div><div class="num">${pending.length}</div><div class="label">${t("approvals.statPending")}</div></div>
+      <div class="summary-box"><div class="icon">👥</div><div class="num">${peopleCount}</div><div class="label">${t("approvals.statPeople")}</div></div>
+      <div class="summary-box"><div class="icon">🕒</div><div class="num">${formatHours(totalHours)}</div><div class="label">${t("approvals.statHours")}</div></div>
+    </div>
+    <div class="section-title" style="margin-top:0;">${t("approvals.title", { count: pending.length })}</div>
     <div id="pending-list"></div>
   `;
   const listEl = el.querySelector("#pending-list");
@@ -599,9 +609,12 @@ async function renderEmployeesTab(el, profile) {
   const accounts = await fetchAllUsers();
 
   el.innerHTML = `
-    <button class="btn btn-primary" id="add-employee-btn">${t("employees.addButton")}</button>
-    <div class="card" style="margin-top:14px;">
-      <h2>👥 ${t("employees.listTitle", { count: accounts.length })}</h2>
+    <div class="card">
+      <h2>
+        <span>👥 ${t("employees.listTitle", { count: accounts.length })}</span>
+        <button class="btn btn-primary btn-small panel-action" id="add-employee-btn" style="width:auto;">${t("employees.addButton")}</button>
+      </h2>
+      <div class="panel-subtitle">${t("employees.listSubtitle")}</div>
       <div id="employee-list">${accounts.length === 0 ? `<div class="empty-state">${t("employees.empty")}</div>` : ""}</div>
     </div>
     <div class="card">
@@ -901,16 +914,17 @@ async function renderRecordsTab(el, profile) {
 
   const contentEl = el.querySelector("#records-sub-content");
   if (recordsSubTab === "byEmployee") {
-    renderByEmployeeSubTab(contentEl, el, profile, all, employees, empMap, currentMonthStr());
+    renderByEmployeeSubTab(contentEl, el, profile, all, employees, empMap);
   } else {
     renderByDaySubTab(contentEl, el, profile, all, employees, empMap);
   }
 }
 
-// 按选定月份把「按员工」汇总导出成 Excel，方便老板直接拿去对着 Zelle 转账。
-// SheetJS 通过 CDN 按需加载（index.html 里 <script defer>），这里只在真正点击导出时才检查是否加载完成，
+// 按选定的时间区间把「按员工」汇总导出成 Excel，方便老板直接拿去对着 Zelle 转账。
+// 用的是 xlsx-js-style（SheetJS 社区版 + 单元格样式扩展，标准 xlsx.full.min.js 本身不支持写入加粗/填色）。
+// 通过 CDN 按需加载（index.html 里 <script defer>），这里只在真正点击导出时才检查是否加载完成，
 // 避免因为脚本还没下载完/被浏览器拦截而卡住整个页面。
-function exportPayrollExcel(rows, month) {
+function exportPayrollExcel(rows, from, to) {
   if (typeof XLSX === "undefined") {
     showToast(t("allRecords.exportNoData"));
     return;
@@ -921,6 +935,8 @@ function exportPayrollExcel(rows, month) {
     return;
   }
 
+  const periodLabel = from === to ? from : `${from} ~ ${to}`;
+  const rangeSlug = from === to ? from : `${from}_${to}`;
   const header = [
     t("allRecords.exportColName"),
     t("allRecords.exportColFullName"),
@@ -928,30 +944,118 @@ function exportPayrollExcel(rows, month) {
     t("allRecords.exportColHours"),
     t("allRecords.exportColAmount")
   ];
-  const body = withHours.map((r) => [
-    r.name,
-    r.fullName,
-    r.zelleAccount,
-    Number(formatHours(r.hours)),
-    Number(r.pay.toFixed(2))
-  ]);
+  const totalHours = withHours.reduce((s, r) => s + r.hours, 0);
+  const totalPay = withHours.reduce((s, r) => s + r.pay, 0);
+  const colCount = header.length;
 
-  const ws = XLSX.utils.aoa_to_sheet([header, ...body]);
-  ws["!cols"] = [{ wch: 16 }, { wch: 18 }, { wch: 22 }, { wch: 10 }, { wch: 12 }];
+  const aoa = [
+    [`${t("allRecords.exportSheetName")} · ${periodLabel}`, "", "", "", ""],
+    header,
+    ...withHours.map((r) => [r.name, r.fullName, r.zelleAccount, Number(formatHours(r.hours)), Number(r.pay.toFixed(2))]),
+    [t("allRecords.exportTotal"), "", "", Number(totalHours.toFixed(2)), Number(totalPay.toFixed(2))]
+  ];
+  const totalRowIdx = aoa.length - 1;
+
+  const ws = XLSX.utils.aoa_to_sheet(aoa);
+  ws["!cols"] = [{ wch: 16 }, { wch: 18 }, { wch: 24 }, { wch: 10 }, { wch: 14 }];
+  ws["!merges"] = [{ s: { r: 0, c: 0 }, e: { r: 0, c: colCount - 1 } }];
+  ws["!autofilter"] = { ref: XLSX.utils.encode_range({ s: { r: 1, c: 0 }, e: { r: 1 + withHours.length, c: colCount - 1 } }) };
+  ws["!freeze"] = { xSplit: 0, ySplit: 2 };
+
+  const TITLE_STYLE = { font: { bold: true, sz: 13, color: { rgb: "4B36B5" } } };
+  const HEADER_STYLE = {
+    font: { bold: true, color: { rgb: "FFFFFF" } },
+    fill: { patternType: "solid", fgColor: { rgb: "6253D4" } },
+    alignment: { horizontal: "center", vertical: "center" }
+  };
+  const ZEBRA_FILL = { patternType: "solid", fgColor: { rgb: "F5F4FF" } };
+  const TOTAL_STYLE = { font: { bold: true }, border: { top: { style: "thin", color: { rgb: "999999" } } } };
+  const TOTAL_NUM_STYLE = { ...TOTAL_STYLE, alignment: { horizontal: "right" } };
+
+  const setStyle = (r, c, style) => {
+    const addr = XLSX.utils.encode_cell({ r, c });
+    if (ws[addr]) ws[addr].s = { ...(ws[addr].s || {}), ...style };
+  };
+  const setFormat = (r, c, z) => {
+    const addr = XLSX.utils.encode_cell({ r, c });
+    if (ws[addr]) ws[addr].z = z;
+  };
+
+  for (let c = 0; c < colCount; c++) {
+    setStyle(0, c, TITLE_STYLE);
+    setStyle(1, c, HEADER_STYLE);
+  }
+  withHours.forEach((r, i) => {
+    const rowIdx = 2 + i;
+    setFormat(rowIdx, 3, "0.00");
+    setFormat(rowIdx, 4, '"$"#,##0.00');
+    if (i % 2 === 1) {
+      for (let c = 0; c < colCount; c++) setStyle(rowIdx, c, { fill: ZEBRA_FILL });
+    }
+  });
+  for (let c = 0; c < colCount; c++) setStyle(totalRowIdx, c, c >= 3 ? TOTAL_NUM_STYLE : TOTAL_STYLE);
+  setFormat(totalRowIdx, 3, "0.00");
+  setFormat(totalRowIdx, 4, '"$"#,##0.00');
+
   const wb = XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(wb, ws, t("allRecords.exportSheetName"));
-  XLSX.writeFile(wb, `payroll-${month}.xlsx`);
+  XLSX.writeFile(wb, `payroll-${rangeSlug}.xlsx`);
   showToast(t("allRecords.exportDone"));
 }
 
-function renderByEmployeeSubTab(el, outerEl, profile, all, employees, empMap, initialMonth) {
+// 「按员工」页签的统计区间：从固定的「只能选一个月」改成几个老板实际会用的预设——
+// 今天/昨天/本周/上周/本月/上月，再加一个「自定义」兜底任意起止日期。
+const PERIOD_PRESETS = ["today", "yesterday", "thisWeek", "lastWeek", "thisMonth", "lastMonth", "custom"];
+
+function computePresetRange(preset, customFrom, customTo) {
+  const today = todayStr();
+  switch (preset) {
+    case "today":
+      return { from: today, to: today };
+    case "yesterday": {
+      const y = daysAgoStr(2);
+      return { from: y, to: y };
+    }
+    case "thisWeek":
+      return { from: startOfWeekStr(today), to: today };
+    case "lastWeek": {
+      const lastWeekAnchor = daysAgoStr(8); // 上周的某一天（今天往前推8天，保证落在上一周内）
+      return { from: startOfWeekStr(lastWeekAnchor), to: endOfWeekStr(lastWeekAnchor) };
+    }
+    case "thisMonth":
+      return monthBounds(currentMonthStr());
+    case "lastMonth":
+      return monthBounds(shiftMonth(currentMonthStr(), -1));
+    case "custom":
+      return { from: customFrom || today, to: customTo || today };
+    default:
+      return monthBounds(currentMonthStr());
+  }
+}
+
+function renderByEmployeeSubTab(el, outerEl, profile, all, employees, empMap) {
   el.innerHTML = `
-    <div class="field-row" style="align-items:center; margin-bottom:0;">
+    <div class="chart-range-row" id="period-btns">
+      ${PERIOD_PRESETS.map(
+        (p) => `<button class="btn btn-secondary btn-small range-btn" data-preset="${p}">${t("allRecords.preset" + p[0].toUpperCase() + p.slice(1))}</button>`
+      ).join("")}
+    </div>
+    <div id="custom-range-fields" class="field-row hidden" style="margin-top:10px;">
+      <div class="field">
+        <label>${t("chart.from")}</label>
+        <input type="date" id="range-from" value="${daysAgoStr(7)}" max="${todayStr()}" />
+      </div>
+      <div class="field">
+        <label>${t("chart.to")}</label>
+        <input type="date" id="range-to" value="${todayStr()}" max="${todayStr()}" />
+      </div>
+    </div>
+    <div class="field-row" style="align-items:center; margin-top:10px;">
       <div class="filter-bar">
         <span class="filter-icon">📅</span>
         <div class="filter-text">
-          <label>${t("allRecords.filterMonth")}</label>
-          <input type="month" id="filter-month" value="${initialMonth}" />
+          <label>${t("allRecords.periodLabel")}</label>
+          <div id="period-label" style="font-weight:700; font-size:15px;"></div>
         </div>
       </div>
       <button class="btn btn-secondary" id="export-excel-btn" style="width:auto; white-space:nowrap;">📤 ${t("allRecords.exportButton")}</button>
@@ -960,23 +1064,43 @@ function renderByEmployeeSubTab(el, outerEl, profile, all, employees, empMap, in
   `;
 
   let currentRows = [];
-  let currentMonth = initialMonth;
+  let currentFrom = "";
+  let currentTo = "";
+  let preset = "thisMonth";
 
   el.querySelector("#export-excel-btn").addEventListener("click", () => {
-    exportPayrollExcel(currentRows, currentMonth);
+    exportPayrollExcel(currentRows, currentFrom, currentTo);
   });
 
-  function render(m) {
-    currentMonth = m;
-    const monthRecords = all.filter((r) => r.date.startsWith(m));
+  function setPreset(p) {
+    preset = p;
+    el.querySelectorAll("#period-btns .range-btn").forEach((b) => b.classList.toggle("active", b.dataset.preset === preset));
+    el.querySelector("#custom-range-fields").classList.toggle("hidden", preset !== "custom");
+    const customFrom = el.querySelector("#range-from").value;
+    const customTo = el.querySelector("#range-to").value;
+    const { from, to } = computePresetRange(preset, customFrom, customTo);
+    render(from, to);
+  }
+
+  el.querySelectorAll("#period-btns .range-btn").forEach((btn) => {
+    btn.addEventListener("click", () => setPreset(btn.dataset.preset));
+  });
+  el.querySelector("#range-from").addEventListener("change", () => preset === "custom" && setPreset("custom"));
+  el.querySelector("#range-to").addEventListener("change", () => preset === "custom" && setPreset("custom"));
+
+  function render(from, to) {
+    currentFrom = from;
+    currentTo = to;
+    el.querySelector("#period-label").textContent = from === to ? from : `${from} ~ ${to}`;
+    const rangeRecords = all.filter((r) => r.date >= from && r.date <= to);
     const byUid = {};
-    monthRecords
+    rangeRecords
       .filter((r) => r.status === "approved")
       .forEach((r) => {
         byUid[r.uid] = (byUid[r.uid] || 0) + (r.workedHours || 0);
       });
     const pendingByUid = {};
-    monthRecords
+    rangeRecords
       .filter((r) => r.status === "pending")
       .forEach((r) => {
         pendingByUid[r.uid] = (pendingByUid[r.uid] || 0) + 1;
@@ -1026,7 +1150,7 @@ function renderByEmployeeSubTab(el, outerEl, profile, all, employees, empMap, in
         if (e.target.closest(".icon-btn")) return;
         const uid = row.dataset.uid;
         const emp = empMap[uid];
-        openEmployeeDetailModal({ uid, name: emp.name || emp.username, hourlyWage: emp.hourlyWage || 0 }, m, () =>
+        openEmployeeDetailModal({ uid, name: emp.name || emp.username, hourlyWage: emp.hourlyWage || 0 }, to.slice(0, 7), () =>
           renderRecordsTab(outerEl, profile)
         );
       });
@@ -1049,8 +1173,7 @@ function renderByEmployeeSubTab(el, outerEl, profile, all, employees, empMap, in
     });
   }
 
-  el.querySelector("#filter-month").addEventListener("change", (e) => render(e.target.value));
-  render(initialMonth);
+  setPreset(preset);
 }
 
 function renderByDaySubTab(el, outerEl, profile, all, employees, empMap) {
@@ -1077,9 +1200,9 @@ function renderByDaySubTab(el, outerEl, profile, all, employees, empMap) {
 
     el.querySelector("#day-summary").innerHTML = `
       <div class="summary-grid">
-        <div class="summary-box"><div class="num">${workedUids.size}</div><div class="label">${t("allRecords.headcountLabel")}</div></div>
-        <div class="summary-box"><div class="num">${dayRecords.filter((r) => r.status === "pending").length}</div><div class="label">${t("allRecords.pendingLabel")}</div></div>
-        <div class="summary-box"><div class="num">${formatHours(approvedHours)}</div><div class="label">${t("allRecords.dayHoursLabel")}</div></div>
+        <div class="summary-box"><div class="icon">✅</div><div class="num">${workedUids.size}</div><div class="label">${t("allRecords.headcountLabel")}</div></div>
+        <div class="summary-box"><div class="icon">⏳</div><div class="num">${dayRecords.filter((r) => r.status === "pending").length}</div><div class="label">${t("allRecords.pendingLabel")}</div></div>
+        <div class="summary-box"><div class="icon">🕒</div><div class="num">${formatHours(approvedHours)}</div><div class="label">${t("allRecords.dayHoursLabel")}</div></div>
       </div>
     `;
 
@@ -1180,8 +1303,8 @@ async function openEmployeeDetailModal(emp, initialMonth, onChanged) {
             <button class="btn btn-secondary btn-small" id="cal-next">›</button>
           </div>
           <div class="summary-grid" style="margin:10px 0 14px;">
-            <div class="summary-box"><div class="num">${formatHours(approvedHours)}</div><div class="label">${t("allRecords.periodApproved")}</div></div>
-            <div class="summary-box"><div class="num">$${formatMoney(pay)}</div><div class="label">${t("allRecords.periodPay")}</div></div>
+            <div class="summary-box"><div class="icon">🕒</div><div class="num">${formatHours(approvedHours)}</div><div class="label">${t("allRecords.periodApproved")}</div></div>
+            <div class="summary-box"><div class="icon">💰</div><div class="num">$${formatMoney(pay)}</div><div class="label">${t("allRecords.periodPay")}</div></div>
           </div>
           <div class="cal-weekday-row">${weekdayLabels.map((w) => `<div>${w}</div>`).join("")}</div>
           <div class="cal-grid">${cells}</div>
@@ -1265,8 +1388,8 @@ function openEmployeeChartModal(emp, allRecords) {
         </div>
         <div id="chart-area" style="margin-top:10px;"></div>
         <div class="summary-grid" style="margin-top:14px;">
-          <div class="summary-box"><div class="num" id="chart-total-hours">0.00</div><div class="label">${t("chart.totalHours")}</div></div>
-          <div class="summary-box"><div class="num" id="chart-total-pay">$0.00</div><div class="label">${t("chart.estPay")}</div></div>
+          <div class="summary-box"><div class="icon">🕒</div><div class="num" id="chart-total-hours">0.00</div><div class="label">${t("chart.totalHours")}</div></div>
+          <div class="summary-box"><div class="icon">💰</div><div class="num" id="chart-total-pay">$0.00</div><div class="label">${t("chart.estPay")}</div></div>
         </div>
         <div class="modal-actions">
           <button class="btn btn-secondary" id="modal-cancel">${t("chart.close")}</button>
@@ -1340,9 +1463,9 @@ async function openPaymentModal(emp, allRecords) {
       <div class="modal-sheet">
         <h2>💰 ${t("payments.modalTitle", { name: emp.name })}</h2>
         <div class="summary-grid" id="pay-summary" style="margin-bottom:14px;">
-          <div class="summary-box"><div class="num">$${formatMoney(totalEarned)}</div><div class="label">${t("payments.totalEarned")}</div></div>
-          <div class="summary-box"><div class="num" id="pay-total-paid">$0.00</div><div class="label">${t("payments.totalPaid")}</div></div>
-          <div class="summary-box"><div class="num" id="pay-outstanding">$0.00</div><div class="label">${t("payments.outstanding")}</div></div>
+          <div class="summary-box"><div class="icon">💵</div><div class="num">$${formatMoney(totalEarned)}</div><div class="label">${t("payments.totalEarned")}</div></div>
+          <div class="summary-box"><div class="icon">✅</div><div class="num" id="pay-total-paid">$0.00</div><div class="label">${t("payments.totalPaid")}</div></div>
+          <div class="summary-box"><div class="icon">⏳</div><div class="num" id="pay-outstanding">$0.00</div><div class="label">${t("payments.outstanding")}</div></div>
         </div>
         <div id="modal-error" class="error-msg"></div>
         <div class="field">

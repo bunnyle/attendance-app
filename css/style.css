@@ -420,8 +420,29 @@ nav.bottom-nav button.active .icon { transform: translateY(-1px) scale(1.08); }
 
 .card h2 {
   font-size: 15px;
-  margin: 0 0 14px;
+  margin: 0 0 2px;
   font-weight: 700;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+.card h2 .panel-action {
+  font-size: 12px;
+  font-weight: 700;
+}
+.card .panel-subtitle {
+  font-size: 12px;
+  color: var(--muted);
+  font-weight: 500;
+  margin: 0 0 14px;
+}
+
+/* ---------- 统计卡片（summary-box）里的小图标 ---------- */
+.summary-box .icon {
+  font-size: 15px;
+  opacity: 0.7;
+  margin-bottom: 3px;
 }
 
 .section-title {

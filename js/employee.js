@@ -189,6 +189,7 @@ function renderReportTab(el, profile) {
       </div>
       <div class="summary-grid" style="margin-bottom:8px;">
         <div class="summary-box">
+          <div class="icon">🕒</div>
           <div class="num" id="f-preview">9.00</div>
           <div class="label">${t("report.previewLabel")}</div>
         </div>
@@ -257,16 +258,18 @@ async function renderRecordsTab(el, profile) {
   el.innerHTML = `
     <div class="summary-grid">
       <div class="summary-box">
+        <div class="icon">🕒</div>
         <div class="num">${formatHours(totalHours)}</div>
         <div class="label">${t("records.monthApproved")}</div>
       </div>
       <div class="summary-box">
+        <div class="icon">⏳</div>
         <div class="num">${pendingCount}</div>
         <div class="label">${t("records.pendingCount")}</div>
       </div>
       ${
         canSeeWage
-          ? `<div class="summary-box"><div class="num">$${formatMoney(totalPay)}</div><div class="label">${t("records.monthPay")}</div></div>`
+          ? `<div class="summary-box"><div class="icon">💰</div><div class="num">$${formatMoney(totalPay)}</div><div class="label">${t("records.monthPay")}</div></div>`
           : ""
       }
     </div>
@@ -291,10 +294,10 @@ async function renderRecordsTab(el, profile) {
       </div>
       <div id="chart-area" style="margin-top:10px;"></div>
       <div class="summary-grid" style="margin-top:14px;">
-        <div class="summary-box"><div class="num" id="chart-total-hours">0.00</div><div class="label">${t("chart.totalHours")}</div></div>
+        <div class="summary-box"><div class="icon">🕒</div><div class="num" id="chart-total-hours">0.00</div><div class="label">${t("chart.totalHours")}</div></div>
         ${
           canSeeWage
-            ? `<div class="summary-box"><div class="num" id="chart-total-pay">$0.00</div><div class="label">${t("chart.estPay")}</div></div>`
+            ? `<div class="summary-box"><div class="icon">💰</div><div class="num" id="chart-total-pay">$0.00</div><div class="label">${t("chart.estPay")}</div></div>`
             : ""
         }
       </div>
@@ -380,9 +383,10 @@ async function renderRecordsTab(el, profile) {
       if (!bodyEl) return;
       bodyEl.innerHTML = `
         <div class="summary-grid" style="margin-bottom:14px;">
-          <div class="summary-box"><div class="num">$${formatMoney(totalEarned)}</div><div class="label">${t("payments.totalEarned")}</div></div>
-          <div class="summary-box"><div class="num">$${formatMoney(totalPaid)}</div><div class="label">${t("payments.totalPaid")}</div></div>
+          <div class="summary-box"><div class="icon">💵</div><div class="num">$${formatMoney(totalEarned)}</div><div class="label">${t("payments.totalEarned")}</div></div>
+          <div class="summary-box"><div class="icon">✅</div><div class="num">$${formatMoney(totalPaid)}</div><div class="label">${t("payments.totalPaid")}</div></div>
           <div class="summary-box${outstanding > 0.001 ? " summary-box-warn" : ""}">
+            <div class="icon">⏳</div>
             <div class="num">$${formatMoney(outstanding > 0 ? outstanding : 0)}</div>
             <div class="label">${outstanding > 0.001 ? t("payments.outstanding") : t("payments.fullyPaid")}</div>
           </div>

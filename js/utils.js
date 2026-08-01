@@ -107,6 +107,25 @@ export function daysAgoStr(n) {
   return toDateStr(d);
 }
 
+// 本周/上周等「按星期」的预设区间用：一周从周日开始，跟日历模块（cal.sun 排第一列）保持一致
+export function startOfWeekStr(dateStr) {
+  const d = new Date(dateStr + "T00:00:00");
+  d.setDate(d.getDate() - d.getDay());
+  return toDateStr(d);
+}
+export function endOfWeekStr(dateStr) {
+  const d = new Date(dateStr + "T00:00:00");
+  d.setDate(d.getDate() + (6 - d.getDay()));
+  return toDateStr(d);
+}
+
+// "YYYY-MM" -> 这个月第一天和最后一天的日期字符串，用于「本月/上月」这类整月预设区间
+export function monthBounds(monthStr) {
+  const [y, mo] = monthStr.split("-").map(Number);
+  const lastDay = new Date(y, mo, 0).getDate();
+  return { from: `${monthStr}-01`, to: `${monthStr}-${String(lastDay).padStart(2, "0")}` };
+}
+
 // 生成一个不依赖任何图表库的极简 SVG 柱状图。
 // data: [{ label, value }]，value 为当天工时（小时）
 export function renderBarChartSVG(data, opts = {}) {
