@@ -9,3 +9,9 @@ firestore-debug.log
 
 # Editor
 .vscode/
+
+# Capacitor：node_modules 和 www 都是可以随时重新生成的构建产物，不用提交；
+# ios/ 目录建议提交到 git——里面会有你手动在 Xcode 里改过的签名、权限等设置，不是纯自动生成的
+node_modules/
+www/
+

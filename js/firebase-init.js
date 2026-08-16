@@ -22,7 +22,8 @@ import {
   query,
   where,
   orderBy,
-  serverTimestamp
+  serverTimestamp,
+  writeBatch
 } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
 import { firebaseConfig } from "./firebase-config.js";
 
@@ -51,5 +52,6 @@ export {
   where,
   orderBy,
   serverTimestamp,
+  writeBatch,
   firebaseConfig
 };
