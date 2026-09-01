@@ -980,6 +980,8 @@ async function renderRecordsTab(el, profile) {
 // 用的是 xlsx-js-style（SheetJS 社区版 + 单元格样式扩展，标准 xlsx.full.min.js 本身不支持写入加粗/填色）。
 // 通过 CDN 按需加载（index.html 里 <script defer>），这里只在真正点击导出时才检查是否加载完成，
 // 避免因为脚本还没下载完/被浏览器拦截而卡住整个页面。
+// rows 里的 paid/remaining 是「这个导出区间内」已经登记的薪酬支付金额和还差多少——
+// 如果这个月已经用「薪酬支付」功能记过一笔款，导出时就能直接看出这个月还剩多少没付，不用再手动核对。
 function exportPayrollExcel(rows, from, to) {
   if (typeof XLSX === "undefined") {
     showToast(t("allRecords.exportNoData"));
@@ -998,22 +1000,42 @@ function exportPayrollExcel(rows, from, to) {
     t("allRecords.exportColFullName"),
     t("allRecords.exportColZelle"),
     t("allRecords.exportColHours"),
-    t("allRecords.exportColAmount")
+    t("allRecords.exportColAmount"),
+    t("allRecords.exportColPaid"),
+    t("allRecords.exportColRemaining")
   ];
   const totalHours = withHours.reduce((s, r) => s + r.hours, 0);
   const totalPay = withHours.reduce((s, r) => s + r.pay, 0);
+  const totalPaid = withHours.reduce((s, r) => s + (r.paid || 0), 0);
+  const totalRemaining = withHours.reduce((s, r) => s + (r.remaining || 0), 0);
   const colCount = header.length;
 
   const aoa = [
-    [`${t("allRecords.exportSheetName")} · ${periodLabel}`, "", "", "", ""],
+    [`${t("allRecords.exportSheetName")} · ${periodLabel}`, ...Array(colCount - 1).fill("")],
     header,
-    ...withHours.map((r) => [r.name, r.fullName, r.zelleAccount, Number(formatHours(r.hours)), Number(r.pay.toFixed(2))]),
-    [t("allRecords.exportTotal"), "", "", Number(totalHours.toFixed(2)), Number(totalPay.toFixed(2))]
+    ...withHours.map((r) => [
+      r.name,
+      r.fullName,
+      r.zelleAccount,
+      Number(formatHours(r.hours)),
+      Number(r.pay.toFixed(2)),
+      Number((r.paid || 0).toFixed(2)),
+      Number((r.remaining || 0).toFixed(2))
+    ]),
+    [
+      t("allRecords.exportTotal"),
+      "",
+      "",
+      Number(totalHours.toFixed(2)),
+      Number(totalPay.toFixed(2)),
+      Number(totalPaid.toFixed(2)),
+      Number(totalRemaining.toFixed(2))
+    ]
   ];
   const totalRowIdx = aoa.length - 1;
 
   const ws = XLSX.utils.aoa_to_sheet(aoa);
-  ws["!cols"] = [{ wch: 16 }, { wch: 18 }, { wch: 24 }, { wch: 10 }, { wch: 14 }];
+  ws["!cols"] = [{ wch: 16 }, { wch: 18 }, { wch: 24 }, { wch: 10 }, { wch: 14 }, { wch: 14 }, { wch: 14 }];
   ws["!merges"] = [{ s: { r: 0, c: 0 }, e: { r: 0, c: colCount - 1 } }];
   ws["!autofilter"] = { ref: XLSX.utils.encode_range({ s: { r: 1, c: 0 }, e: { r: 1 + withHours.length, c: colCount - 1 } }) };
   ws["!freeze"] = { xSplit: 0, ySplit: 2 };
@@ -1045,6 +1067,8 @@ function exportPayrollExcel(rows, from, to) {
     const rowIdx = 2 + i;
     setFormat(rowIdx, 3, "0.00");
     setFormat(rowIdx, 4, '"$"#,##0.00');
+    setFormat(rowIdx, 5, '"$"#,##0.00');
+    setFormat(rowIdx, 6, '"$"#,##0.00');
     if (i % 2 === 1) {
       for (let c = 0; c < colCount; c++) setStyle(rowIdx, c, { fill: ZEBRA_FILL });
     }
@@ -1052,6 +1076,8 @@ function exportPayrollExcel(rows, from, to) {
   for (let c = 0; c < colCount; c++) setStyle(totalRowIdx, c, c >= 3 ? TOTAL_NUM_STYLE : TOTAL_STYLE);
   setFormat(totalRowIdx, 3, "0.00");
   setFormat(totalRowIdx, 4, '"$"#,##0.00');
+  setFormat(totalRowIdx, 5, '"$"#,##0.00');
+  setFormat(totalRowIdx, 6, '"$"#,##0.00');
 
   const wb = XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(wb, ws, t("allRecords.exportSheetName"));
@@ -1144,7 +1170,7 @@ function renderByEmployeeSubTab(el, outerEl, profile, all, employees, empMap) {
   el.querySelector("#range-from").addEventListener("change", () => preset === "custom" && setPreset("custom"));
   el.querySelector("#range-to").addEventListener("change", () => preset === "custom" && setPreset("custom"));
 
-  function render(from, to) {
+  async function render(from, to) {
     currentFrom = from;
     currentTo = to;
     el.querySelector("#period-label").textContent = from === to ? from : `${from} ~ ${to}`;
@@ -1162,17 +1188,33 @@ function renderByEmployeeSubTab(el, outerEl, profile, all, employees, empMap) {
         pendingByUid[r.uid] = (pendingByUid[r.uid] || 0) + 1;
       });
 
+    // 这个区间内已经登记过的薪酬支付（按支付日期是否落在区间内判断），用来在导出的 Excel 里标出「已付/待付」
+    const payments = await fetchAllPayments();
+    const paidByUid = {};
+    payments
+      .filter((p) => p.date >= from && p.date <= to)
+      .forEach((p) => {
+        paidByUid[p.uid] = (paidByUid[p.uid] || 0) + (p.amount || 0);
+      });
+
     // 把所有员工都列出来，哪怕这个月完全没有记录——这样「这个月还没打过卡的人」也一眼就能看出来
     const rows = employees
-      .map((emp) => ({
-        uid: emp.id,
-        name: emp.name || emp.username,
-        fullName: emp.fullName || emp.name || emp.username,
-        zelleAccount: emp.zelleAccount || "",
-        hours: byUid[emp.id] || 0,
-        pay: (byUid[emp.id] || 0) * (emp.hourlyWage || 0),
-        pending: pendingByUid[emp.id] || 0
-      }))
+      .map((emp) => {
+        const hours = byUid[emp.id] || 0;
+        const pay = hours * (emp.hourlyWage || 0);
+        const paid = paidByUid[emp.id] || 0;
+        return {
+          uid: emp.id,
+          name: emp.name || emp.username,
+          fullName: emp.fullName || emp.name || emp.username,
+          zelleAccount: emp.zelleAccount || "",
+          hours,
+          pay,
+          paid,
+          remaining: Math.max(pay - paid, 0),
+          pending: pendingByUid[emp.id] || 0
+        };
+      })
       .sort((a, b) => b.hours - a.hours || a.name.localeCompare(b.name));
     currentRows = rows;
 
