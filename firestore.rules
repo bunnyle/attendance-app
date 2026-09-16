@@ -104,27 +104,5 @@ service cloud.firestore {
       allow update: if isAdmin();
       allow delete: if isAdmin();
     }
-
-    // 班表（排班）：管理员直接给主播/员工排班（建成 approved）；员工也可以自己申请一个想上的班次
-    // （建成 pending，等管理员批核）。跟 timeRecords 的读写模式基本对称。
-    match /shifts/{shiftId} {
-      allow read: if isAdmin() || (isSignedIn() && resource.data.uid == request.auth.uid);
-
-      allow create: if isAdmin() || (
-        isSignedIn()
-        && request.resource.data.uid == request.auth.uid
-        && request.resource.data.status == 'pending'
-      );
-
-      // 批核/修改班次（改时间、改状态）只有管理员能做
-      allow update: if isAdmin();
-
-      // 员工可以撤回自己还在 pending 或已被 rejected 的申请；已排定的班次只能管理员删除/调整
-      allow delete: if isAdmin() || (
-        isSignedIn()
-        && resource.data.uid == request.auth.uid
-        && (resource.data.status == 'pending' || resource.data.status == 'rejected')
-      );
-    }
   }
 }

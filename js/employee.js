@@ -20,12 +20,10 @@ import {
   escapeHtml,
   dateRangeDays,
   daysAgoStr,
-  startOfWeekStr,
   renderBarChartSVG,
   skeletonRows
 } from "./utils.js";
 import { changeOwnPassword, authErrorMessage } from "./auth.js";
-import { renderWeekGrid, addDaysStr } from "./schedule.js";
 import { t } from "./i18n.js";
 
 let currentTab = "report";
@@ -136,64 +134,13 @@ async function fetchMyPayments(uid, force) {
   return list;
 }
 
-// ---------------- 我的班表 ----------------
-
-let myShiftsCache = null;
-let myShiftsCacheAt = 0;
-let myShiftsCacheUid = null;
-
-function invalidateMyShiftsCache() {
-  myShiftsCache = null;
-}
-function peekMyShifts(uid) {
-  return myShiftsCache && myShiftsCacheUid === uid && Date.now() - myShiftsCacheAt < CACHE_TTL_MS ? myShiftsCache : null;
-}
-
-async function fetchMyShifts(uid, force) {
-  if (!force) {
-    const cached = peekMyShifts(uid);
-    if (cached) return cached;
-  }
-  const q = query(collection(db, "shifts"), where("uid", "==", uid));
-  const snap = await getDocs(q);
-  const list = [];
-  snap.forEach((d) => list.push({ id: d.id, ...d.data() }));
-  myShiftsCache = list;
-  myShiftsCacheAt = Date.now();
-  myShiftsCacheUid = uid;
-  return list;
-}
-
-// 申请一个想上的班次，状态是 pending，要等管理员批核才会正式排入班表
-async function requestShift({ uid, employeeName, date, startTime, endTime }) {
-  await addDoc(collection(db, "shifts"), {
-    uid,
-    employeeName,
-    date,
-    startTime,
-    endTime,
-    status: "pending",
-    createdBy: uid,
-    createdAt: serverTimestamp()
-  });
-  invalidateMyShiftsCache();
-}
-
-// 撤回自己还在 pending 或已被驳回的申请（已批核的班次只能管理员调整）
-async function withdrawShift(shiftId) {
-  await deleteDoc(doc(db, "shifts", shiftId));
-  invalidateMyShiftsCache();
-}
-
 export function renderEmployeeView(container, profile) {
   container.innerHTML = `
     <div id="tab-report" class="${currentTab === "report" ? "" : "hidden"}"></div>
     <div id="tab-records" class="${currentTab === "records" ? "" : "hidden"}"></div>
-    <div id="tab-schedule" class="${currentTab === "schedule" ? "" : "hidden"}"></div>
   `;
   if (currentTab === "report") renderReportTab(document.getElementById("tab-report"), profile);
   if (currentTab === "records") renderRecordsTab(document.getElementById("tab-records"), profile);
-  if (currentTab === "schedule") renderScheduleTab(document.getElementById("tab-schedule"), profile);
 }
 
 export function renderEmployeeNav(nav, profile, onSwitch) {
@@ -203,9 +150,6 @@ export function renderEmployeeNav(nav, profile, onSwitch) {
     </button>
     <button data-tab="records" class="${currentTab === "records" ? "active" : ""}">
       <span class="icon">📋</span><span>${t("nav.records")}</span>
-    </button>
-    <button data-tab="schedule" class="${currentTab === "schedule" ? "active" : ""}">
-      <span class="icon">🗓</span><span>${t("nav.schedule")}</span>
     </button>
   `;
   nav.querySelectorAll("button").forEach((btn) => {
@@ -535,184 +479,4 @@ async function renderRecordsTab(el, profile) {
       renderRecordsTab(el, profile);
     });
   });
-}
-
-// ---------------- 我的班表 ----------------
-
-let scheduleWeekStart = null; // 惰性初始化成本周周日，切页签时保留在同一周
-
-function openShiftRequestModal(profile, onSaved) {
-  const root = document.getElementById("modal-root");
-  root.innerHTML = `
-    <div class="modal-backdrop" id="modal-backdrop">
-      <div class="modal-sheet">
-        <h2>🗓 ${t("schedule.requestShift")}</h2>
-        <div id="modal-error" class="error-msg"></div>
-        <div class="field">
-          <label>${t("report.date")}</label>
-          <input type="date" id="sh-date" value="${todayStr()}" />
-        </div>
-        <div class="field-row">
-          <div class="field">
-            <label>${t("report.start")}</label>
-            <input type="time" id="sh-start" value="09:00" />
-          </div>
-          <div class="field">
-            <label>${t("report.end")}</label>
-            <input type="time" id="sh-end" value="18:00" />
-          </div>
-        </div>
-        <div class="modal-actions">
-          <button class="btn btn-secondary" id="modal-cancel">${t("modal.cancel")}</button>
-          <button class="btn btn-primary" id="modal-save">${t("schedule.submitRequestButton")}</button>
-        </div>
-      </div>
-    </div>
-  `;
-
-  document.getElementById("modal-cancel").addEventListener("click", () => (root.innerHTML = ""));
-  document.getElementById("modal-backdrop").addEventListener("click", (e) => {
-    if (e.target.id === "modal-backdrop") root.innerHTML = "";
-  });
-
-  document.getElementById("modal-save").addEventListener("click", async (e) => {
-    const btn = e.currentTarget;
-    const errEl = document.getElementById("modal-error");
-    errEl.textContent = "";
-    const date = document.getElementById("sh-date").value;
-    const startTime = document.getElementById("sh-start").value;
-    const endTime = document.getElementById("sh-end").value;
-    if (!date || !startTime || !endTime) {
-      errEl.textContent = t("report.errorFields");
-      return;
-    }
-    if (startTime === endTime) {
-      errEl.textContent = t("schedule.errorTime");
-      return;
-    }
-    btn.disabled = true;
-    btn.textContent = t("modal.processing");
-    try {
-      await requestShift({
-        uid: profile.id,
-        employeeName: profile.name || profile.username || "",
-        date,
-        startTime,
-        endTime
-      });
-      showToast(t("schedule.requestSubmitted"));
-      root.innerHTML = "";
-      onSaved();
-    } catch (err) {
-      errEl.textContent = authErrorMessage(err);
-      btn.disabled = false;
-      btn.textContent = t("schedule.submitRequestButton");
-    }
-  });
-}
-
-function openMyShiftDetailModal(shift, onSaved) {
-  const root = document.getElementById("modal-root");
-  const canWithdraw = shift.status === "pending" || shift.status === "rejected";
-  const statusHint =
-    shift.status === "approved"
-      ? t("schedule.approvedHint")
-      : shift.status === "pending"
-        ? t("schedule.pendingHint")
-        : t("schedule.rejectedHint");
-
-  root.innerHTML = `
-    <div class="modal-backdrop" id="modal-backdrop">
-      <div class="modal-sheet">
-        <h2>🗓 ${t("schedule.editShift")}</h2>
-        <div class="field"><label>${t("report.date")}</label><input value="${shift.date}" disabled /></div>
-        <div class="field-row">
-          <div class="field"><label>${t("report.start")}</label><input value="${shift.startTime}" disabled /></div>
-          <div class="field"><label>${t("report.end")}</label><input value="${shift.endTime}" disabled /></div>
-        </div>
-        <div class="hint">${statusHint}</div>
-        <div class="modal-actions">
-          <button class="btn btn-secondary" id="modal-cancel" style="width:100%;">${t("chart.close")}</button>
-        </div>
-        ${
-          canWithdraw
-            ? `<div class="modal-actions"><button class="btn btn-danger" id="modal-withdraw" style="width:100%;">${t("records.withdraw")}</button></div>`
-            : ""
-        }
-      </div>
-    </div>
-  `;
-
-  document.getElementById("modal-cancel").addEventListener("click", () => (root.innerHTML = ""));
-  document.getElementById("modal-backdrop").addEventListener("click", (e) => {
-    if (e.target.id === "modal-backdrop") root.innerHTML = "";
-  });
-
-  if (canWithdraw) {
-    document.getElementById("modal-withdraw").addEventListener("click", async () => {
-      if (!confirm(t("records.withdrawConfirm"))) return;
-      await withdrawShift(shift.id);
-      showToast(t("schedule.requestWithdrawn"));
-      root.innerHTML = "";
-      onSaved();
-    });
-  }
-}
-
-async function renderScheduleTab(el, profile) {
-  if (!scheduleWeekStart) scheduleWeekStart = startOfWeekStr(todayStr());
-  el.innerHTML = skeletonRows();
-  const shifts = await fetchMyShifts(profile.id);
-
-  function draw() {
-    const weekEnd = addDaysStr(scheduleWeekStart, 6);
-    el.innerHTML = `
-      <div class="card">
-        <h2>
-          <span>🗓 ${t("schedule.title")}</span>
-          <button class="btn btn-primary btn-small panel-action" id="request-shift-btn" style="width:auto;">+ ${t("schedule.requestShift")}</button>
-        </h2>
-        <div class="panel-subtitle">${t("schedule.myScheduleHint")}</div>
-        <div class="month-nav-row">
-          <button class="btn btn-secondary btn-small" id="week-prev">‹</button>
-          <div class="month-nav-label">${scheduleWeekStart} ~ ${weekEnd}</div>
-          <button class="btn btn-secondary btn-small" id="week-next">›</button>
-        </div>
-        <div style="display:flex; justify-content:center; margin-bottom:12px;">
-          <button class="btn btn-secondary btn-small" id="week-today" style="width:auto;">${t("schedule.thisWeek")}</button>
-        </div>
-        <div class="week-grid-wrap" id="week-grid-container"></div>
-      </div>
-    `;
-
-    const gridEl = el.querySelector("#week-grid-container");
-    renderWeekGrid(gridEl, {
-      weekStart: scheduleWeekStart,
-      shifts,
-      mode: "employee",
-      onShiftClick: (shift) => openMyShiftDetailModal(shift, () => renderScheduleTab(el, profile))
-    });
-
-    el.querySelector("#request-shift-btn").addEventListener("click", () => {
-      openShiftRequestModal(profile, () => renderScheduleTab(el, profile));
-    });
-    el.querySelector("#week-prev").addEventListener("click", () => {
-      scheduleWeekStart = addDaysStr(scheduleWeekStart, -7);
-      draw();
-    });
-    el.querySelector("#week-next").addEventListener("click", () => {
-      scheduleWeekStart = addDaysStr(scheduleWeekStart, 7);
-      draw();
-    });
-    el.querySelector("#week-today").addEventListener("click", () => {
-      scheduleWeekStart = startOfWeekStr(todayStr());
-      draw();
-    });
-  }
-
-  draw();
-}
-
-export function getCurrentEmployeeTab() {
-  return currentTab;
 }

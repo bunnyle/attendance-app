@@ -38,7 +38,6 @@ import {
   skeletonRows
 } from "./utils.js";
 import { authErrorMessage, changeOwnPassword, newInternalEmail } from "./auth.js";
-import { renderWeekGrid, colorForUid, addDaysStr } from "./schedule.js";
 import { t } from "./i18n.js";
 
 let currentTab = "approvals";
@@ -61,9 +60,6 @@ export function renderAdminNav(nav, profile, onSwitch) {
     <button data-tab="records" class="${currentTab === "records" ? "active" : ""}">
       <span class="icon">📊</span><span>${t("nav.allRecords")}</span>
     </button>
-    <button data-tab="schedule" class="${currentTab === "schedule" ? "active" : ""}">
-      <span class="icon">🗓</span><span>${t("nav.schedule")}</span>
-    </button>
   `;
   nav.querySelectorAll("button").forEach((btn) => {
     btn.addEventListener("click", () => {
@@ -79,7 +75,6 @@ export function renderAdminView(container, profile) {
   if (currentTab === "approvals") renderApprovalsTab(el, profile);
   if (currentTab === "employees") renderEmployeesTab(el, profile);
   if (currentTab === "records") renderRecordsTab(el, profile);
-  if (currentTab === "schedule") renderScheduleTab(el, profile);
 }
 
 // ---------------- 数据函数（带一个很轻量的会话内缓存，减少切换页签时的重复请求） ----------------
@@ -163,57 +158,6 @@ async function deletePayment(paymentId) {
   invalidatePaymentsCache();
 }
 
-// ---------------- 班表（排班） ----------------
-
-let shiftsCache = null;
-let shiftsCacheAt = 0;
-function invalidateShiftsCache() {
-  shiftsCache = null;
-}
-async function fetchAllShifts(force) {
-  const now = Date.now();
-  if (!force && shiftsCache && now - shiftsCacheAt < CACHE_TTL_MS) return shiftsCache;
-  const snap = await getDocs(collection(db, "shifts"));
-  const list = [];
-  snap.forEach((d) => list.push({ id: d.id, ...d.data() }));
-  shiftsCache = list;
-  shiftsCacheAt = now;
-  return list;
-}
-
-// 管理员直接给员工排一个班次，默认就是 approved（不需要再走批核）
-async function createShiftForEmployee({ uid, employeeName, date, startTime, endTime, adminUid }) {
-  await addDoc(collection(db, "shifts"), {
-    uid,
-    employeeName,
-    date,
-    startTime,
-    endTime,
-    status: "approved",
-    createdBy: adminUid,
-    reviewedBy: adminUid,
-    reviewedAt: serverTimestamp(),
-    createdAt: serverTimestamp()
-  });
-  invalidateShiftsCache();
-}
-
-// 管理员编辑已有班次，或者批核/驳回员工提交的排班申请（把 status 从 pending 改成 approved/rejected）
-async function updateShift(shiftId, data, adminUid) {
-  const payload = { ...data };
-  if (payload.status && payload.status !== "pending") {
-    payload.reviewedBy = adminUid;
-    payload.reviewedAt = serverTimestamp();
-  }
-  await updateDoc(doc(db, "shifts", shiftId), payload);
-  invalidateShiftsCache();
-}
-
-async function deleteShift(shiftId) {
-  await deleteDoc(doc(db, "shifts", shiftId));
-  invalidateShiftsCache();
-}
-
 // 待审核列表用精确查询，不走缓存：这是管理员最需要看到最新状态的页面，且 pending 记录一般不多，查询很快
 async function fetchPendingRecords() {
   const q = query(collection(db, "timeRecords"), where("status", "==", "pending"));
@@ -272,7 +216,7 @@ async function createRecordForEmployee({ uid, employeeName, date, startTime, end
 
 // 使用「第二个 Firebase App 实例」创建账号（员工或管理员），避免影响当前管理员的登录态。
 // 系统完全不使用真实邮箱：用用户名自动生成一个内部专用、界面上看不到的登录邮箱。
-async function createAccount({ name, username, password, role, hourlyWage, canViewWage, fullName, zelleAccount }) {
+async function createAccount({ name, username, password, role, hourlyWage, canViewWage, fullName, zelleAccount, payCycle }) {
   const uname = normalizeUsername(username);
   const email = newInternalEmail(uname);
 
@@ -305,6 +249,7 @@ async function createAccount({ name, username, password, role, hourlyWage, canVi
       canViewWage: !!canViewWage,
       fullName: (fullName || "").trim(),
       zelleAccount: (zelleAccount || "").trim(),
+      payCycle: payCycle === "semimonthly" ? "semimonthly" : "monthly",
       status: "active",
       createdAt: serverTimestamp()
     });
@@ -393,6 +338,7 @@ async function resetEmployeePassword(account, newPassword) {
         canViewWage: account.canViewWage,
         fullName: account.fullName,
         zelleAccount: account.zelleAccount,
+        payCycle: account.payCycle,
         status: account.status
       };
 
@@ -696,7 +642,11 @@ async function renderEmployeesTab(el, profile) {
           ${u.canViewWage && u.role !== "admin" ? `<span class="tag">${t("employees.canViewTag")}</span>` : ""}
         </div>
         <div class="email">@${escapeHtml(u.username || "—")}</div>
-        ${u.role !== "admin" ? `<div class="wage">${t("employees.wageLabel")}: $${formatMoney(u.hourlyWage || 0)}</div>` : ""}
+        ${
+          u.role !== "admin"
+            ? `<div class="wage">${t("employees.wageLabel")}: $${formatMoney(u.hourlyWage || 0)} · ${u.payCycle === "semimonthly" ? t("modal.payCycleSemimonthlyShort") : t("modal.payCycleMonthlyShort")}</div>`
+            : ""
+        }
       </div>
       <button class="btn btn-secondary btn-small edit-emp-btn">${t("employees.editButton")}</button>
     `;
@@ -774,6 +724,14 @@ function openEmployeeModal(account, refreshEl, profile) {
           <label>${t("modal.zelleAccount")}</label>
           <input id="m-zelle" value="${isEdit ? escapeHtml(account.zelleAccount || "") : ""}" placeholder="name@email.com / 555-123-4567" />
           <div class="hint">${t("modal.zelleAccountHint")}</div>
+        </div>
+        <div class="field">
+          <label>${t("modal.payCycle")}</label>
+          <select id="m-paycycle">
+            <option value="monthly" ${(isEdit ? account.payCycle : "monthly") !== "semimonthly" ? "selected" : ""}>${t("modal.payCycleMonthly")}</option>
+            <option value="semimonthly" ${isEdit && account.payCycle === "semimonthly" ? "selected" : ""}>${t("modal.payCycleSemimonthly")}</option>
+          </select>
+          <div class="hint">${t("modal.payCycleHint")}</div>
         </div>
         <div class="switch-row">
           <span class="label-text">${t("modal.allowViewWage")}</span>
@@ -881,6 +839,7 @@ function openEmployeeModal(account, refreshEl, profile) {
     const role = document.getElementById("m-role").value;
     const fullName = document.getElementById("m-fullname").value.trim();
     const zelleAccount = document.getElementById("m-zelle").value.trim();
+    const payCycle = document.getElementById("m-paycycle").value;
 
     if (!name) {
       errEl.textContent = t("modal.nameRequired");
@@ -899,7 +858,8 @@ function openEmployeeModal(account, refreshEl, profile) {
           role: isSelf ? account.role : role,
           status: active ? "active" : "disabled",
           fullName,
-          zelleAccount
+          zelleAccount,
+          payCycle
         });
         showToast(t("modal.saved"));
       } else {
@@ -917,7 +877,7 @@ function openEmployeeModal(account, refreshEl, profile) {
           btn.textContent = t("modal.create");
           return;
         }
-        await createAccount({ name, username, password, role, hourlyWage: wage, canViewWage: canView, fullName, zelleAccount });
+        await createAccount({ name, username, password, role, hourlyWage: wage, canViewWage: canView, fullName, zelleAccount, payCycle });
         showToast(t("modal.created"));
       }
       root.innerHTML = "";
@@ -947,7 +907,7 @@ async function renderRecordsTab(el, profile) {
   const cachedRecords = peekRecords();
   const cachedUsers = peekUsers();
   if (!cachedRecords || !cachedUsers) el.innerHTML = skeletonRows();
-  const [all, accounts] = await Promise.all([fetchAllTimeRecords(), fetchAllUsers()]);
+  const [all, accounts, payments] = await Promise.all([fetchAllTimeRecords(), fetchAllUsers(), fetchAllPayments()]);
   const empMap = {};
   accounts.forEach((e) => (empMap[e.id] = e));
   const employees = accounts.filter((e) => e.role !== "admin");
@@ -970,17 +930,19 @@ async function renderRecordsTab(el, profile) {
 
   const contentEl = el.querySelector("#records-sub-content");
   if (recordsSubTab === "byEmployee") {
-    renderByEmployeeSubTab(contentEl, el, profile, all, employees, empMap);
+    renderByEmployeeSubTab(contentEl, el, profile, all, employees, empMap, payments);
   } else {
     renderByDaySubTab(contentEl, el, profile, all, employees, empMap);
   }
 }
 
-// 按选定的时间区间把「按员工」汇总导出成 Excel，方便老板直接拿去对着 Zelle 转账。
+// 按发薪批次（月份 + 1号/16号）把「按员工」汇总导出成 Excel，方便老板直接拿去对着 Zelle 转账。
+// 每位员工的区间已经按各自的发薪周期（整月结/半月结）在 buildPayrollBatchRows 里算好，
+// 这里只负责排版；应发/已发/未发三列分开列出，未发才是这次真正需要转账的金额。
 // 用的是 xlsx-js-style（SheetJS 社区版 + 单元格样式扩展，标准 xlsx.full.min.js 本身不支持写入加粗/填色）。
 // 通过 CDN 按需加载（index.html 里 <script defer>），这里只在真正点击导出时才检查是否加载完成，
 // 避免因为脚本还没下载完/被浏览器拦截而卡住整个页面。
-function exportPayrollExcel(rows, from, to) {
+function exportPayrollExcel(rows, monthStr, payDay) {
   if (typeof XLSX === "undefined") {
     showToast(t("allRecords.exportNoData"));
     return;
@@ -991,29 +953,53 @@ function exportPayrollExcel(rows, from, to) {
     return;
   }
 
-  const periodLabel = from === to ? from : `${from} ~ ${to}`;
-  const rangeSlug = from === to ? from : `${from}_${to}`;
+  const payDayLabel = payDay === "16" ? t("payrollBatch.payDay16") : t("payrollBatch.payDay1");
+  const periodLabel = `${monthStr} · ${payDayLabel}`;
+  const rangeSlug = `${monthStr}-day${payDay}`;
   const header = [
     t("allRecords.exportColName"),
     t("allRecords.exportColFullName"),
     t("allRecords.exportColZelle"),
+    t("allRecords.exportColPeriod"),
     t("allRecords.exportColHours"),
-    t("allRecords.exportColAmount")
+    t("allRecords.exportColGross"),
+    t("allRecords.exportColPaid"),
+    t("allRecords.exportColRemaining")
   ];
   const totalHours = withHours.reduce((s, r) => s + r.hours, 0);
-  const totalPay = withHours.reduce((s, r) => s + r.pay, 0);
+  const totalGross = withHours.reduce((s, r) => s + r.gross, 0);
+  const totalPaid = withHours.reduce((s, r) => s + r.paid, 0);
+  const totalRemaining = withHours.reduce((s, r) => s + r.remaining, 0);
   const colCount = header.length;
 
   const aoa = [
-    [`${t("allRecords.exportSheetName")} · ${periodLabel}`, "", "", "", ""],
+    [`${t("allRecords.exportSheetName")} · ${periodLabel}`, "", "", "", "", "", "", ""],
     header,
-    ...withHours.map((r) => [r.name, r.fullName, r.zelleAccount, Number(formatHours(r.hours)), Number(r.pay.toFixed(2))]),
-    [t("allRecords.exportTotal"), "", "", Number(totalHours.toFixed(2)), Number(totalPay.toFixed(2))]
+    ...withHours.map((r) => [
+      r.name,
+      r.fullName,
+      r.zelleAccount,
+      `${r.from} ~ ${r.to}`,
+      Number(formatHours(r.hours)),
+      Number(r.gross.toFixed(2)),
+      Number(r.paid.toFixed(2)),
+      Number(r.remaining.toFixed(2))
+    ]),
+    [
+      t("allRecords.exportTotal"),
+      "",
+      "",
+      "",
+      Number(totalHours.toFixed(2)),
+      Number(totalGross.toFixed(2)),
+      Number(totalPaid.toFixed(2)),
+      Number(totalRemaining.toFixed(2))
+    ]
   ];
   const totalRowIdx = aoa.length - 1;
 
   const ws = XLSX.utils.aoa_to_sheet(aoa);
-  ws["!cols"] = [{ wch: 16 }, { wch: 18 }, { wch: 24 }, { wch: 10 }, { wch: 14 }];
+  ws["!cols"] = [{ wch: 14 }, { wch: 16 }, { wch: 22 }, { wch: 20 }, { wch: 9 }, { wch: 12 }, { wch: 12 }, { wch: 12 }];
   ws["!merges"] = [{ s: { r: 0, c: 0 }, e: { r: 0, c: colCount - 1 } }];
   ws["!autofilter"] = { ref: XLSX.utils.encode_range({ s: { r: 1, c: 0 }, e: { r: 1 + withHours.length, c: colCount - 1 } }) };
   ws["!freeze"] = { xSplit: 0, ySplit: 2 };
@@ -1043,15 +1029,19 @@ function exportPayrollExcel(rows, from, to) {
   }
   withHours.forEach((r, i) => {
     const rowIdx = 2 + i;
-    setFormat(rowIdx, 3, "0.00");
-    setFormat(rowIdx, 4, '"$"#,##0.00');
+    setFormat(rowIdx, 4, "0.00");
+    setFormat(rowIdx, 5, '"$"#,##0.00');
+    setFormat(rowIdx, 6, '"$"#,##0.00');
+    setFormat(rowIdx, 7, '"$"#,##0.00');
     if (i % 2 === 1) {
       for (let c = 0; c < colCount; c++) setStyle(rowIdx, c, { fill: ZEBRA_FILL });
     }
   });
-  for (let c = 0; c < colCount; c++) setStyle(totalRowIdx, c, c >= 3 ? TOTAL_NUM_STYLE : TOTAL_STYLE);
-  setFormat(totalRowIdx, 3, "0.00");
-  setFormat(totalRowIdx, 4, '"$"#,##0.00');
+  for (let c = 0; c < colCount; c++) setStyle(totalRowIdx, c, c >= 4 ? TOTAL_NUM_STYLE : TOTAL_STYLE);
+  setFormat(totalRowIdx, 4, "0.00");
+  setFormat(totalRowIdx, 5, '"$"#,##0.00');
+  setFormat(totalRowIdx, 6, '"$"#,##0.00');
+  setFormat(totalRowIdx, 7, '"$"#,##0.00');
 
   const wb = XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(wb, ws, t("allRecords.exportSheetName"));
@@ -1089,7 +1079,56 @@ function computePresetRange(preset, customFrom, customTo) {
   }
 }
 
-function renderByEmployeeSubTab(el, outerEl, profile, all, employees, empMap) {
+// 发薪批次对应的实际起止日期："在某月第几号发薪"，不同发薪周期的员工对应不同区间：
+// - 整月结：只在 1 号发薪，覆盖上个月整月
+// - 半月结：1 号发薪覆盖上个月 16 号~月底，16 号发薪覆盖本月 1 号~15 号
+// 整月结员工在「16号」批次里不适用（没有半月工资），直接跳过。
+function payPeriodFor(payCycle, payDay, monthStr) {
+  const isSemimonthly = payCycle === "semimonthly";
+  if (payDay === "16") {
+    if (!isSemimonthly) return null;
+    return { from: `${monthStr}-01`, to: `${monthStr}-15` };
+  }
+  const prevMonth = shiftMonth(monthStr, -1);
+  if (isSemimonthly) {
+    return { from: `${prevMonth}-16`, to: monthBounds(prevMonth).to };
+  }
+  return monthBounds(prevMonth);
+}
+
+// 按发薪批次（月份+1号/16号）给每位员工算出各自正确的区间：工时只统计已批核记录，
+// 已发金额从 payments 里按日期落在该区间内的记录求和，剩余未发 = 应发 - 已发。
+function buildPayrollBatchRows(employees, all, payments, payDay, monthStr) {
+  return employees
+    .map((emp) => {
+      const period = payPeriodFor(emp.payCycle, payDay, monthStr);
+      if (!period) return null;
+      const { from, to } = period;
+      const hours = all
+        .filter((r) => r.uid === emp.id && r.status === "approved" && r.date >= from && r.date <= to)
+        .reduce((s, r) => s + (r.workedHours || 0), 0);
+      const gross = hours * (emp.hourlyWage || 0);
+      const paid = payments
+        .filter((p) => p.uid === emp.id && p.date >= from && p.date <= to)
+        .reduce((s, p) => s + (p.amount || 0), 0);
+      return {
+        uid: emp.id,
+        name: emp.name || emp.username,
+        fullName: emp.fullName || emp.name || emp.username,
+        zelleAccount: emp.zelleAccount || "",
+        from,
+        to,
+        hours,
+        gross,
+        paid,
+        remaining: gross - paid
+      };
+    })
+    .filter(Boolean)
+    .sort((a, b) => b.hours - a.hours || a.name.localeCompare(b.name));
+}
+
+function renderByEmployeeSubTab(el, outerEl, profile, all, employees, empMap, payments) {
   el.innerHTML = `
     <div class="chart-range-row" id="period-btns">
       ${PERIOD_PRESETS.map(
@@ -1106,27 +1145,78 @@ function renderByEmployeeSubTab(el, outerEl, profile, all, employees, empMap) {
         <input type="date" id="range-to" value="${todayStr()}" max="${todayStr()}" />
       </div>
     </div>
-    <div class="field-row" style="align-items:center; margin-top:10px;">
-      <div class="filter-bar">
-        <span class="filter-icon">📅</span>
-        <div class="filter-text">
-          <label>${t("allRecords.periodLabel")}</label>
-          <div id="period-label" style="font-weight:700; font-size:15px;"></div>
-        </div>
+    <div class="filter-bar" style="margin-top:10px;">
+      <span class="filter-icon">📅</span>
+      <div class="filter-text">
+        <label>${t("allRecords.periodLabel")}</label>
+        <div id="period-label" style="font-weight:700; font-size:15px;"></div>
       </div>
-      <button class="btn btn-secondary" id="export-excel-btn" style="width:auto; white-space:nowrap;">📤 ${t("allRecords.exportButton")}</button>
     </div>
     <div id="by-employee-list"></div>
+
+    <div class="card" style="margin-top:14px;">
+      <h2><span>💰 ${t("payrollBatch.title")}</span></h2>
+      <div class="panel-subtitle">${t("payrollBatch.hint")}</div>
+      <div class="field-row" style="align-items:flex-end;">
+        <div class="field">
+          <label>${t("payrollBatch.month")}</label>
+          <input type="month" id="pb-month" value="${currentMonthStr()}" />
+        </div>
+        <div class="field">
+          <label>${t("payrollBatch.payDay")}</label>
+          <select id="pb-payday">
+            <option value="1">${t("payrollBatch.payDay1")}</option>
+            <option value="16">${t("payrollBatch.payDay16")}</option>
+          </select>
+        </div>
+      </div>
+      <div id="pb-preview"></div>
+      <button class="btn btn-primary btn-block" id="pb-export-btn">📤 ${t("payrollBatch.exportButton")}</button>
+    </div>
   `;
+
+  function renderPayrollBatch() {
+    const monthStr = el.querySelector("#pb-month").value || currentMonthStr();
+    const payDay = el.querySelector("#pb-payday").value || "1";
+    const rows = buildPayrollBatchRows(employees, all, payments, payDay, monthStr);
+    const skipped = employees.length - rows.length;
+    const previewEl = el.querySelector("#pb-preview");
+
+    if (rows.length === 0) {
+      previewEl.innerHTML = `<div class="empty-state">${t("payrollBatch.empty")}</div>`;
+    } else {
+      const periodSet = [...new Set(rows.map((r) => `${r.from} ~ ${r.to}`))];
+      previewEl.innerHTML = `
+        <div class="hint" style="margin:10px 0 12px;">
+          ${t("payrollBatch.periodsHint")}: ${periodSet.join(" / ")}${skipped > 0 ? " · " + t("payrollBatch.skippedHint", { count: skipped }) : ""}
+        </div>
+        <div id="pb-list"></div>
+      `;
+      el.querySelector("#pb-list").innerHTML = rows
+        .map(
+          (r) => `
+        <div class="employee-row">
+          <div style="min-width:0;">
+            <div class="name">${escapeHtml(r.name)}</div>
+            <div class="wage">${r.from} ~ ${r.to} · ${formatHours(r.hours)} ${t("records.hours")} · ${t("payrollBatch.remaining")} $${formatMoney(r.remaining)}</div>
+          </div>
+        </div>
+      `
+        )
+        .join("");
+    }
+
+    el.querySelector("#pb-export-btn").onclick = () => exportPayrollExcel(rows, monthStr, payDay);
+  }
+
+  el.querySelector("#pb-month").addEventListener("change", renderPayrollBatch);
+  el.querySelector("#pb-payday").addEventListener("change", renderPayrollBatch);
+  renderPayrollBatch();
 
   let currentRows = [];
   let currentFrom = "";
   let currentTo = "";
   let preset = "thisMonth";
-
-  el.querySelector("#export-excel-btn").addEventListener("click", () => {
-    exportPayrollExcel(currentRows, currentFrom, currentTo);
-  });
 
   function setPreset(p) {
     preset = p;
@@ -1642,201 +1732,4 @@ async function openPaymentModal(emp, allRecords) {
   });
 
   await refreshHistory();
-}
-
-// ---------------- 班表（周历） ----------------
-
-let scheduleWeekStart = null; // 惰性初始化成本周周日，切页签时保留在同一周
-
-// 新建/编辑班次的弹窗；draft 有 id 就是编辑已有班次（管理员批核/改时间/删除），
-// 没有 id 就是新建（点空白格子触发，需要先选员工）
-function openShiftModal(draft, employees, onSaved) {
-  const isEdit = !!draft.id;
-  const root = document.getElementById("modal-root");
-  const employeeOptions = employees
-    .map((e) => `<option value="${e.id}" ${draft.uid === e.id ? "selected" : ""}>${escapeHtml(e.name || e.username)}</option>`)
-    .join("");
-
-  root.innerHTML = `
-    <div class="modal-backdrop" id="modal-backdrop">
-      <div class="modal-sheet">
-        <h2>🗓 ${isEdit ? t("schedule.editShift") : t("schedule.addShift")}</h2>
-        <div id="modal-error" class="error-msg"></div>
-        ${
-          isEdit
-            ? `<div class="field"><label>${t("schedule.employeeLabel")}</label><input value="${escapeHtml(draft.employeeName || "")}" disabled /></div>`
-            : `<div class="field">
-                <label>${t("schedule.employeeLabel")}</label>
-                <select id="sh-employee">
-                  <option value="">${t("schedule.employeePlaceholder")}</option>
-                  ${employeeOptions}
-                </select>
-              </div>`
-        }
-        <div class="field">
-          <label>${t("report.date")}</label>
-          <input type="date" id="sh-date" value="${draft.date || todayStr()}" />
-        </div>
-        <div class="field-row">
-          <div class="field">
-            <label>${t("report.start")}</label>
-            <input type="time" id="sh-start" value="${draft.startTime || "09:00"}" />
-          </div>
-          <div class="field">
-            <label>${t("report.end")}</label>
-            <input type="time" id="sh-end" value="${draft.endTime || "18:00"}" />
-          </div>
-        </div>
-        ${
-          isEdit
-            ? `<div class="field">
-                <label>${t("records.status")}</label>
-                <select id="sh-status">
-                  <option value="pending" ${draft.status === "pending" ? "selected" : ""}>${t("status.pending")}</option>
-                  <option value="approved" ${draft.status === "approved" ? "selected" : ""}>${t("status.approved")}</option>
-                  <option value="rejected" ${draft.status === "rejected" ? "selected" : ""}>${t("status.rejected")}</option>
-                </select>
-              </div>`
-            : ""
-        }
-        <div class="modal-actions">
-          <button class="btn btn-secondary" id="modal-cancel">${t("modal.cancel")}</button>
-          <button class="btn btn-primary" id="modal-save">${t("schedule.saveButton")}</button>
-        </div>
-        ${
-          isEdit
-            ? `<div class="modal-actions"><button class="btn btn-danger" id="modal-delete" style="width:100%;">${t("records.deleteRecord")}</button></div>`
-            : ""
-        }
-      </div>
-    </div>
-  `;
-
-  document.getElementById("modal-cancel").addEventListener("click", () => (root.innerHTML = ""));
-  document.getElementById("modal-backdrop").addEventListener("click", (e) => {
-    if (e.target.id === "modal-backdrop") root.innerHTML = "";
-  });
-
-  if (isEdit) {
-    document.getElementById("modal-delete").addEventListener("click", async () => {
-      if (!confirm(t("schedule.deleteShiftConfirm"))) return;
-      await deleteShift(draft.id);
-      showToast(t("schedule.shiftDeleted"));
-      root.innerHTML = "";
-      onSaved();
-    });
-  }
-
-  document.getElementById("modal-save").addEventListener("click", async (e) => {
-    const btn = e.currentTarget;
-    const errEl = document.getElementById("modal-error");
-    errEl.textContent = "";
-    const date = document.getElementById("sh-date").value;
-    const startTime = document.getElementById("sh-start").value;
-    const endTime = document.getElementById("sh-end").value;
-    let uid = draft.uid;
-    let employeeName = draft.employeeName;
-    if (!isEdit) {
-      uid = document.getElementById("sh-employee").value;
-      if (!uid) {
-        errEl.textContent = t("schedule.errorEmployee");
-        return;
-      }
-      const emp = employees.find((x) => x.id === uid);
-      employeeName = emp ? emp.name || emp.username : "";
-    }
-    if (!date || !startTime || !endTime) {
-      errEl.textContent = t("report.errorFields");
-      return;
-    }
-    if (startTime === endTime) {
-      errEl.textContent = t("schedule.errorTime");
-      return;
-    }
-    btn.disabled = true;
-    btn.textContent = t("modal.processing");
-    try {
-      if (isEdit) {
-        const status = document.getElementById("sh-status").value;
-        await updateShift(draft.id, { date, startTime, endTime, status }, auth.currentUser.uid);
-      } else {
-        await createShiftForEmployee({ uid, employeeName, date, startTime, endTime, adminUid: auth.currentUser.uid });
-      }
-      showToast(t("schedule.shiftSaved"));
-      root.innerHTML = "";
-      onSaved();
-    } catch (err) {
-      errEl.textContent = authErrorMessage(err);
-      btn.disabled = false;
-      btn.textContent = t("schedule.saveButton");
-    }
-  });
-}
-
-async function renderScheduleTab(el, profile) {
-  if (!scheduleWeekStart) scheduleWeekStart = startOfWeekStr(todayStr());
-  el.innerHTML = skeletonRows();
-  const [shifts, records, accounts] = await Promise.all([fetchAllShifts(), fetchAllTimeRecords(), fetchAllUsers()]);
-  const employees = accounts.filter((e) => e.role !== "admin");
-
-  function draw() {
-    const weekEnd = addDaysStr(scheduleWeekStart, 6);
-    const uidsInView = new Set(shifts.filter((s) => s.date >= scheduleWeekStart && s.date <= weekEnd).map((s) => s.uid));
-    const legendEmployees = employees.filter((e) => uidsInView.has(e.id));
-    const actuals = records.filter((r) => r.status !== "rejected");
-
-    el.innerHTML = `
-      <div class="month-nav-row">
-        <button class="btn btn-secondary btn-small" id="week-prev">‹</button>
-        <div class="month-nav-label">${scheduleWeekStart} ~ ${weekEnd}</div>
-        <button class="btn btn-secondary btn-small" id="week-next">›</button>
-      </div>
-      <div style="display:flex; justify-content:center; margin-bottom:12px;">
-        <button class="btn btn-secondary btn-small" id="week-today" style="width:auto;">${t("schedule.thisWeek")}</button>
-      </div>
-      ${
-        legendEmployees.length
-          ? `<div class="week-legend">${legendEmployees
-              .map(
-                (e) =>
-                  `<span class="week-legend-item"><i class="dot" style="background:${colorForUid(e.id)}"></i>${escapeHtml(e.name || e.username)}</span>`
-              )
-              .join("")}</div>`
-          : ""
-      }
-      <div class="week-grid-wrap" id="week-grid-container"></div>
-      <div class="hint">💡 ${t("schedule.overlayHint")}</div>
-    `;
-
-    const gridEl = el.querySelector("#week-grid-container");
-    renderWeekGrid(gridEl, {
-      weekStart: scheduleWeekStart,
-      shifts,
-      actuals,
-      mode: "admin",
-      onSlotClick: (dateStr, hour) => {
-        const startTime = `${String(hour).padStart(2, "0")}:00`;
-        const endTime = `${String((hour + 1) % 24).padStart(2, "0")}:00`;
-        openShiftModal({ date: dateStr, startTime, endTime }, employees, () => renderScheduleTab(el, profile));
-      },
-      onShiftClick: (shift) => {
-        openShiftModal(shift, employees, () => renderScheduleTab(el, profile));
-      }
-    });
-
-    el.querySelector("#week-prev").addEventListener("click", () => {
-      scheduleWeekStart = addDaysStr(scheduleWeekStart, -7);
-      draw();
-    });
-    el.querySelector("#week-next").addEventListener("click", () => {
-      scheduleWeekStart = addDaysStr(scheduleWeekStart, 7);
-      draw();
-    });
-    el.querySelector("#week-today").addEventListener("click", () => {
-      scheduleWeekStart = startOfWeekStr(todayStr());
-      draw();
-    });
-  }
-
-  draw();
 }
