@@ -262,6 +262,7 @@ const STRINGS = {
     "payments.errorAmount": "Please enter an amount greater than 0",
     "payments.errorDate": "Please choose a date",
     "payments.modalTitle": "{name} — Payments",
+    "payments.periodTagHint": "This payment will be tagged as covering {from} ~ {to}, so it's matched to the right payroll batch even if you record it on a different date.",
     "payments.myTitle": "Payments",
 
     "common.loading": "Loading...",
@@ -543,6 +544,7 @@ const STRINGS = {
     "payments.errorAmount": "请输入大于 0 的金额",
     "payments.errorDate": "请选择日期",
     "payments.modalTitle": "{name} — 支付记录",
+    "payments.periodTagHint": "这笔支付会标记为覆盖 {from} ~ {to} 这个区间，之后即使实际记录日期不同，也能准确匹配到正确的发薪批次。",
     "payments.myTitle": "薪酬支付",
 
     "common.loading": "加载中...",

@@ -140,13 +140,18 @@ async function fetchAllPayments(force) {
   return list;
 }
 
-async function createPayment({ uid, employeeName, amount, date, note, adminUid }) {
+// periodFrom/periodTo（可选）：这笔支付实际覆盖的发薪区间。有了这两个字段，工资批次导出里
+// 「已发金额」才能精确匹配到正确的批次，而不是简单按"支付记录的日期是否落在区间内"来猜——
+// 因为很多时候发薪日正好卡在两个批次的边界上（比如每月1号发上月的钱），按日期猜很容易猜错批次。
+async function createPayment({ uid, employeeName, amount, date, note, adminUid, periodFrom, periodTo }) {
   await addDoc(collection(db, "payments"), {
     uid,
     employeeName,
     amount: Number(amount) || 0,
     date,
     note: note || "",
+    periodFrom: periodFrom || null,
+    periodTo: periodTo || null,
     createdBy: adminUid,
     createdAt: serverTimestamp()
   });
@@ -1108,8 +1113,13 @@ function buildPayrollBatchRows(employees, all, payments, payDay, monthStr) {
         .filter((r) => r.uid === emp.id && r.status === "approved" && r.date >= from && r.date <= to)
         .reduce((s, r) => s + (r.workedHours || 0), 0);
       const gross = hours * (emp.hourlyWage || 0);
+      // 优先用支付记录自己标记的 periodFrom/periodTo 区间匹配（精确对应哪一批）；
+      // 老的、没标记过区间的支付记录才退回到"按支付日期落在区间内"的旧方式猜一下。
       const paid = payments
-        .filter((p) => p.uid === emp.id && p.date >= from && p.date <= to)
+        .filter((p) => p.uid === emp.id)
+        .filter((p) =>
+          p.periodFrom && p.periodTo ? p.periodFrom <= to && p.periodTo >= from : p.date >= from && p.date <= to
+        )
         .reduce((s, p) => s + (p.amount || 0), 0);
       return {
         uid: emp.id,
@@ -1195,15 +1205,32 @@ function renderByEmployeeSubTab(el, outerEl, profile, all, employees, empMap, pa
       el.querySelector("#pb-list").innerHTML = rows
         .map(
           (r) => `
-        <div class="employee-row">
+        <div class="employee-row" data-uid="${r.uid}">
           <div style="min-width:0;">
             <div class="name">${escapeHtml(r.name)}</div>
             <div class="wage">${r.from} ~ ${r.to} · ${formatHours(r.hours)} ${t("records.hours")} · ${t("payrollBatch.remaining")} $${formatMoney(r.remaining)}</div>
           </div>
+          <button class="btn btn-secondary btn-small pb-pay-btn" style="width:auto; flex-shrink:0;">💰 ${t("payments.recordPayment")}</button>
         </div>
       `
         )
         .join("");
+
+      el.querySelectorAll(".pb-pay-btn").forEach((btn) => {
+        btn.addEventListener("click", (e) => {
+          const uid = e.currentTarget.closest(".employee-row").dataset.uid;
+          const row = rows.find((r) => r.uid === uid);
+          const emp = empMap[uid];
+          openPaymentModal({ uid, name: emp.name || emp.username, hourlyWage: emp.hourlyWage || 0 }, all, {
+            from: row.from,
+            to: row.to,
+            presetAmount: row.remaining,
+            // 保存后要重新拉取 payments（不能只用外层闭包里那份旧数据重画），
+            // 所以直接重跑整个 records 页签，顺带也会刷新上面「按员工」的汇总列表
+            onSaved: () => renderRecordsTab(outerEl, profile)
+          });
+        });
+      });
     }
 
     el.querySelector("#pb-export-btn").onclick = () => exportPayrollExcel(rows, monthStr, payDay);
@@ -1597,7 +1624,7 @@ function openEmployeeChartModal(emp, allRecords) {
 
 // ---------------- 薪酬支付（管理端） ----------------
 
-async function openPaymentModal(emp, allRecords) {
+async function openPaymentModal(emp, allRecords, periodContext) {
   const root = document.getElementById("modal-root");
 
   const totalEarned = allRecords
@@ -1608,6 +1635,11 @@ async function openPaymentModal(emp, allRecords) {
     <div class="modal-backdrop" id="modal-backdrop">
       <div class="modal-sheet">
         <h2>💰 ${t("payments.modalTitle", { name: emp.name })}</h2>
+        ${
+          periodContext
+            ? `<div class="hint" style="margin-bottom:10px;">${t("payments.periodTagHint", { from: periodContext.from, to: periodContext.to })}</div>`
+            : ""
+        }
         <div class="summary-grid" id="pay-summary" style="margin-bottom:14px;">
           <div class="summary-box"><div class="icon">💵</div><div class="num">$${formatMoney(totalEarned)}</div><div class="label">${t("payments.totalEarned")}</div></div>
           <div class="summary-box"><div class="icon">✅</div><div class="num" id="pay-total-paid">$0.00</div><div class="label">${t("payments.totalPaid")}</div></div>
@@ -1617,7 +1649,7 @@ async function openPaymentModal(emp, allRecords) {
         <div class="field">
           <label>${t("payments.amount")}</label>
           <div class="field-row" style="align-items:flex-end;">
-            <input type="number" min="0" step="0.01" id="pay-amount" style="flex:1;" />
+            <input type="number" min="0" step="0.01" id="pay-amount" value="${periodContext && periodContext.presetAmount > 0 ? periodContext.presetAmount.toFixed(2) : ""}" style="flex:1;" />
             <button class="btn btn-secondary btn-small" id="pay-full-btn" type="button">${t("payments.payFull")}</button>
           </div>
         </div>
@@ -1717,12 +1749,15 @@ async function openPaymentModal(emp, allRecords) {
         amount,
         date,
         note,
-        adminUid: auth.currentUser.uid
+        adminUid: auth.currentUser.uid,
+        periodFrom: periodContext ? periodContext.from : null,
+        periodTo: periodContext ? periodContext.to : null
       });
       showToast(t("payments.saved"));
       document.getElementById("pay-amount").value = "";
       document.getElementById("pay-note").value = "";
       await refreshHistory();
+      if (periodContext && periodContext.onSaved) periodContext.onSaved();
     } catch (err) {
       errEl.textContent = authErrorMessage(err);
     } finally {
