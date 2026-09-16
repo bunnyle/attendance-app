@@ -4,7 +4,7 @@
 
 // 每次有明显的功能性更新（不只是样式微调）时手动把这个版本号 +1，
 // 这样旧设备上缓存住的老版本 JS 会在下次打开时被强制清掉，不会一直卡在过时的逻辑上。
-const CACHE_NAME = "attendance-app-v2";
+const CACHE_NAME = "attendance-app-v3";
 
 const APP_SHELL = [
   "./",
