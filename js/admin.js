@@ -140,18 +140,13 @@ async function fetchAllPayments(force) {
   return list;
 }
 
-// periodFrom/periodTo（可选）：这笔支付实际覆盖的发薪区间。有了这两个字段，工资批次导出里
-// 「已发金额」才能精确匹配到正确的批次，而不是简单按"支付记录的日期是否落在区间内"来猜——
-// 因为很多时候发薪日正好卡在两个批次的边界上（比如每月1号发上月的钱），按日期猜很容易猜错批次。
-async function createPayment({ uid, employeeName, amount, date, note, adminUid, periodFrom, periodTo }) {
+async function createPayment({ uid, employeeName, amount, date, note, adminUid }) {
   await addDoc(collection(db, "payments"), {
     uid,
     employeeName,
     amount: Number(amount) || 0,
     date,
     note: note || "",
-    periodFrom: periodFrom || null,
-    periodTo: periodTo || null,
     createdBy: adminUid,
     createdAt: serverTimestamp()
   });
@@ -221,7 +216,7 @@ async function createRecordForEmployee({ uid, employeeName, date, startTime, end
 
 // 使用「第二个 Firebase App 实例」创建账号（员工或管理员），避免影响当前管理员的登录态。
 // 系统完全不使用真实邮箱：用用户名自动生成一个内部专用、界面上看不到的登录邮箱。
-async function createAccount({ name, username, password, role, hourlyWage, canViewWage, fullName, zelleAccount, payCycle }) {
+async function createAccount({ name, username, password, role, hourlyWage, canViewWage, fullName, zelleAccount }) {
   const uname = normalizeUsername(username);
   const email = newInternalEmail(uname);
 
@@ -254,7 +249,6 @@ async function createAccount({ name, username, password, role, hourlyWage, canVi
       canViewWage: !!canViewWage,
       fullName: (fullName || "").trim(),
       zelleAccount: (zelleAccount || "").trim(),
-      payCycle: payCycle === "semimonthly" ? "semimonthly" : "monthly",
       status: "active",
       createdAt: serverTimestamp()
     });
@@ -343,7 +337,6 @@ async function resetEmployeePassword(account, newPassword) {
         canViewWage: account.canViewWage,
         fullName: account.fullName,
         zelleAccount: account.zelleAccount,
-        payCycle: account.payCycle,
         status: account.status
       };
 
@@ -647,11 +640,7 @@ async function renderEmployeesTab(el, profile) {
           ${u.canViewWage && u.role !== "admin" ? `<span class="tag">${t("employees.canViewTag")}</span>` : ""}
         </div>
         <div class="email">@${escapeHtml(u.username || "—")}</div>
-        ${
-          u.role !== "admin"
-            ? `<div class="wage">${t("employees.wageLabel")}: $${formatMoney(u.hourlyWage || 0)} · ${u.payCycle === "semimonthly" ? t("modal.payCycleSemimonthlyShort") : t("modal.payCycleMonthlyShort")}</div>`
-            : ""
-        }
+        ${u.role !== "admin" ? `<div class="wage">${t("employees.wageLabel")}: $${formatMoney(u.hourlyWage || 0)}</div>` : ""}
       </div>
       <button class="btn btn-secondary btn-small edit-emp-btn">${t("employees.editButton")}</button>
     `;
@@ -729,14 +718,6 @@ function openEmployeeModal(account, refreshEl, profile) {
           <label>${t("modal.zelleAccount")}</label>
           <input id="m-zelle" value="${isEdit ? escapeHtml(account.zelleAccount || "") : ""}" placeholder="name@email.com / 555-123-4567" />
           <div class="hint">${t("modal.zelleAccountHint")}</div>
-        </div>
-        <div class="field">
-          <label>${t("modal.payCycle")}</label>
-          <select id="m-paycycle">
-            <option value="monthly" ${(isEdit ? account.payCycle : "monthly") !== "semimonthly" ? "selected" : ""}>${t("modal.payCycleMonthly")}</option>
-            <option value="semimonthly" ${isEdit && account.payCycle === "semimonthly" ? "selected" : ""}>${t("modal.payCycleSemimonthly")}</option>
-          </select>
-          <div class="hint">${t("modal.payCycleHint")}</div>
         </div>
         <div class="switch-row">
           <span class="label-text">${t("modal.allowViewWage")}</span>
@@ -844,7 +825,6 @@ function openEmployeeModal(account, refreshEl, profile) {
     const role = document.getElementById("m-role").value;
     const fullName = document.getElementById("m-fullname").value.trim();
     const zelleAccount = document.getElementById("m-zelle").value.trim();
-    const payCycle = document.getElementById("m-paycycle").value;
 
     if (!name) {
       errEl.textContent = t("modal.nameRequired");
@@ -863,8 +843,7 @@ function openEmployeeModal(account, refreshEl, profile) {
           role: isSelf ? account.role : role,
           status: active ? "active" : "disabled",
           fullName,
-          zelleAccount,
-          payCycle
+          zelleAccount
         });
         showToast(t("modal.saved"));
       } else {
@@ -882,7 +861,7 @@ function openEmployeeModal(account, refreshEl, profile) {
           btn.textContent = t("modal.create");
           return;
         }
-        await createAccount({ name, username, password, role, hourlyWage: wage, canViewWage: canView, fullName, zelleAccount, payCycle });
+        await createAccount({ name, username, password, role, hourlyWage: wage, canViewWage: canView, fullName, zelleAccount });
         showToast(t("modal.created"));
       }
       root.innerHTML = "";
@@ -912,7 +891,7 @@ async function renderRecordsTab(el, profile) {
   const cachedRecords = peekRecords();
   const cachedUsers = peekUsers();
   if (!cachedRecords || !cachedUsers) el.innerHTML = skeletonRows();
-  const [all, accounts, payments] = await Promise.all([fetchAllTimeRecords(), fetchAllUsers(), fetchAllPayments()]);
+  const [all, accounts] = await Promise.all([fetchAllTimeRecords(), fetchAllUsers()]);
   const empMap = {};
   accounts.forEach((e) => (empMap[e.id] = e));
   const employees = accounts.filter((e) => e.role !== "admin");
@@ -935,7 +914,7 @@ async function renderRecordsTab(el, profile) {
 
   const contentEl = el.querySelector("#records-sub-content");
   if (recordsSubTab === "byEmployee") {
-    renderByEmployeeSubTab(contentEl, el, profile, all, employees, empMap, payments);
+    renderByEmployeeSubTab(contentEl, el, profile, all, employees, empMap);
   } else {
     renderByDaySubTab(contentEl, el, profile, all, employees, empMap);
   }
@@ -947,7 +926,10 @@ async function renderRecordsTab(el, profile) {
 // 用的是 xlsx-js-style（SheetJS 社区版 + 单元格样式扩展，标准 xlsx.full.min.js 本身不支持写入加粗/填色）。
 // 通过 CDN 按需加载（index.html 里 <script defer>），这里只在真正点击导出时才检查是否加载完成，
 // 避免因为脚本还没下载完/被浏览器拦截而卡住整个页面。
-function exportPayrollExcel(rows, monthStr, payDay) {
+// 按选定的时间区间把「按员工」汇总导出成 Excel，方便老板直接拿去对着 Zelle 转账。
+// 合计行用 Excel 公式（SUM）而不是写死算好的数字，方便之后手动改个别数据时合计会自动跟着变。
+// 用的是 xlsx-js-style（SheetJS 社区版 + 单元格样式扩展，标准 xlsx.full.min.js 本身不支持写入加粗/填色）。
+function exportPayrollExcel(rows, from, to) {
   if (typeof XLSX === "undefined") {
     showToast(t("allRecords.exportNoData"));
     return;
@@ -958,56 +940,39 @@ function exportPayrollExcel(rows, monthStr, payDay) {
     return;
   }
 
-  const payDayLabel = payDay === "16" ? t("payrollBatch.payDay16") : t("payrollBatch.payDay1");
-  const periodLabel = `${monthStr} · ${payDayLabel}`;
-  const rangeSlug = `${monthStr}-day${payDay}`;
+  const periodLabel = from === to ? from : `${from} ~ ${to}`;
+  const rangeSlug = from === to ? from : `${from}_${to}`;
   const header = [
     t("allRecords.exportColName"),
     t("allRecords.exportColFullName"),
     t("allRecords.exportColZelle"),
-    t("allRecords.exportColPeriod"),
     t("allRecords.exportColHours"),
-    t("allRecords.exportColGross"),
-    t("allRecords.exportColPaid"),
-    t("allRecords.exportColRemaining")
+    t("allRecords.exportColAmount")
   ];
-  const totalHours = withHours.reduce((s, r) => s + r.hours, 0);
-  const totalGross = withHours.reduce((s, r) => s + r.gross, 0);
-  const totalPaid = withHours.reduce((s, r) => s + r.paid, 0);
-  const totalRemaining = withHours.reduce((s, r) => s + r.remaining, 0);
   const colCount = header.length;
+  const firstDataRow = 2; // 0-based：第0行标题，第1行表头，数据从第2行开始
+  const lastDataRow = firstDataRow + withHours.length - 1;
+  const totalRowIdx = firstDataRow + withHours.length;
 
   const aoa = [
-    [`${t("allRecords.exportSheetName")} · ${periodLabel}`, "", "", "", "", "", "", ""],
+    [`${t("allRecords.exportSheetName")} · ${periodLabel}`, "", "", "", ""],
     header,
-    ...withHours.map((r) => [
-      r.name,
-      r.fullName,
-      r.zelleAccount,
-      `${r.from} ~ ${r.to}`,
-      Number(formatHours(r.hours)),
-      Number(r.gross.toFixed(2)),
-      Number(r.paid.toFixed(2)),
-      Number(r.remaining.toFixed(2))
-    ]),
-    [
-      t("allRecords.exportTotal"),
-      "",
-      "",
-      "",
-      Number(totalHours.toFixed(2)),
-      Number(totalGross.toFixed(2)),
-      Number(totalPaid.toFixed(2)),
-      Number(totalRemaining.toFixed(2))
-    ]
+    ...withHours.map((r) => [r.name, r.fullName, r.zelleAccount, Number(formatHours(r.hours)), Number(r.pay.toFixed(2))]),
+    [t("allRecords.exportTotal"), "", "", null, null]
   ];
-  const totalRowIdx = aoa.length - 1;
 
   const ws = XLSX.utils.aoa_to_sheet(aoa);
-  ws["!cols"] = [{ wch: 14 }, { wch: 16 }, { wch: 22 }, { wch: 20 }, { wch: 9 }, { wch: 12 }, { wch: 12 }, { wch: 12 }];
+  ws["!cols"] = [{ wch: 16 }, { wch: 18 }, { wch: 24 }, { wch: 10 }, { wch: 14 }];
   ws["!merges"] = [{ s: { r: 0, c: 0 }, e: { r: 0, c: colCount - 1 } }];
   ws["!autofilter"] = { ref: XLSX.utils.encode_range({ s: { r: 1, c: 0 }, e: { r: 1 + withHours.length, c: colCount - 1 } }) };
   ws["!freeze"] = { xSplit: 0, ySplit: 2 };
+
+  // 合计行用公式，而不是直接写死数字：Excel 的行号是从 1 开始的，数组索引要 +1 转换一下
+  const hoursCol = XLSX.utils.encode_col(3);
+  const amountCol = XLSX.utils.encode_col(4);
+  const sumRange = (col) => `${col}${firstDataRow + 1}:${col}${lastDataRow + 1}`;
+  ws[XLSX.utils.encode_cell({ r: totalRowIdx, c: 3 })] = { t: "n", f: `SUM(${sumRange(hoursCol)})` };
+  ws[XLSX.utils.encode_cell({ r: totalRowIdx, c: 4 })] = { t: "n", f: `SUM(${sumRange(amountCol)})` };
 
   const TITLE_STYLE = { font: { bold: true, sz: 13, color: { rgb: "4B36B5" } } };
   const HEADER_STYLE = {
@@ -1033,20 +998,16 @@ function exportPayrollExcel(rows, monthStr, payDay) {
     setStyle(1, c, HEADER_STYLE);
   }
   withHours.forEach((r, i) => {
-    const rowIdx = 2 + i;
-    setFormat(rowIdx, 4, "0.00");
-    setFormat(rowIdx, 5, '"$"#,##0.00');
-    setFormat(rowIdx, 6, '"$"#,##0.00');
-    setFormat(rowIdx, 7, '"$"#,##0.00');
+    const rowIdx = firstDataRow + i;
+    setFormat(rowIdx, 3, "0.00");
+    setFormat(rowIdx, 4, '"$"#,##0.00');
     if (i % 2 === 1) {
       for (let c = 0; c < colCount; c++) setStyle(rowIdx, c, { fill: ZEBRA_FILL });
     }
   });
-  for (let c = 0; c < colCount; c++) setStyle(totalRowIdx, c, c >= 4 ? TOTAL_NUM_STYLE : TOTAL_STYLE);
-  setFormat(totalRowIdx, 4, "0.00");
-  setFormat(totalRowIdx, 5, '"$"#,##0.00');
-  setFormat(totalRowIdx, 6, '"$"#,##0.00');
-  setFormat(totalRowIdx, 7, '"$"#,##0.00');
+  for (let c = 0; c < colCount; c++) setStyle(totalRowIdx, c, c >= 3 ? TOTAL_NUM_STYLE : TOTAL_STYLE);
+  setFormat(totalRowIdx, 3, "0.00");
+  setFormat(totalRowIdx, 4, '"$"#,##0.00');
 
   const wb = XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(wb, ws, t("allRecords.exportSheetName"));
@@ -1084,61 +1045,7 @@ function computePresetRange(preset, customFrom, customTo) {
   }
 }
 
-// 发薪批次对应的实际起止日期："在某月第几号发薪"，不同发薪周期的员工对应不同区间：
-// - 整月结：只在 1 号发薪，覆盖上个月整月
-// - 半月结：1 号发薪覆盖上个月 16 号~月底，16 号发薪覆盖本月 1 号~15 号
-// 整月结员工在「16号」批次里不适用（没有半月工资），直接跳过。
-function payPeriodFor(payCycle, payDay, monthStr) {
-  const isSemimonthly = payCycle === "semimonthly";
-  if (payDay === "16") {
-    if (!isSemimonthly) return null;
-    return { from: `${monthStr}-01`, to: `${monthStr}-15` };
-  }
-  const prevMonth = shiftMonth(monthStr, -1);
-  if (isSemimonthly) {
-    return { from: `${prevMonth}-16`, to: monthBounds(prevMonth).to };
-  }
-  return monthBounds(prevMonth);
-}
-
-// 按发薪批次（月份+1号/16号）给每位员工算出各自正确的区间：工时只统计已批核记录，
-// 已发金额从 payments 里按日期落在该区间内的记录求和，剩余未发 = 应发 - 已发。
-function buildPayrollBatchRows(employees, all, payments, payDay, monthStr) {
-  return employees
-    .map((emp) => {
-      const period = payPeriodFor(emp.payCycle, payDay, monthStr);
-      if (!period) return null;
-      const { from, to } = period;
-      const hours = all
-        .filter((r) => r.uid === emp.id && r.status === "approved" && r.date >= from && r.date <= to)
-        .reduce((s, r) => s + (r.workedHours || 0), 0);
-      const gross = hours * (emp.hourlyWage || 0);
-      // 优先用支付记录自己标记的 periodFrom/periodTo 区间匹配（精确对应哪一批）；
-      // 老的、没标记过区间的支付记录才退回到"按支付日期落在区间内"的旧方式猜一下。
-      const paid = payments
-        .filter((p) => p.uid === emp.id)
-        .filter((p) =>
-          p.periodFrom && p.periodTo ? p.periodFrom <= to && p.periodTo >= from : p.date >= from && p.date <= to
-        )
-        .reduce((s, p) => s + (p.amount || 0), 0);
-      return {
-        uid: emp.id,
-        name: emp.name || emp.username,
-        fullName: emp.fullName || emp.name || emp.username,
-        zelleAccount: emp.zelleAccount || "",
-        from,
-        to,
-        hours,
-        gross,
-        paid,
-        remaining: gross - paid
-      };
-    })
-    .filter(Boolean)
-    .sort((a, b) => b.hours - a.hours || a.name.localeCompare(b.name));
-}
-
-function renderByEmployeeSubTab(el, outerEl, profile, all, employees, empMap, payments) {
+function renderByEmployeeSubTab(el, outerEl, profile, all, employees, empMap) {
   el.innerHTML = `
     <div class="chart-range-row" id="period-btns">
       ${PERIOD_PRESETS.map(
@@ -1155,95 +1062,27 @@ function renderByEmployeeSubTab(el, outerEl, profile, all, employees, empMap, pa
         <input type="date" id="range-to" value="${todayStr()}" max="${todayStr()}" />
       </div>
     </div>
-    <div class="filter-bar" style="margin-top:10px;">
-      <span class="filter-icon">📅</span>
-      <div class="filter-text">
-        <label>${t("allRecords.periodLabel")}</label>
-        <div id="period-label" style="font-weight:700; font-size:15px;"></div>
+    <div class="field-row" style="align-items:center; margin-top:10px;">
+      <div class="filter-bar">
+        <span class="filter-icon">📅</span>
+        <div class="filter-text">
+          <label>${t("allRecords.periodLabel")}</label>
+          <div id="period-label" style="font-weight:700; font-size:15px;"></div>
+        </div>
       </div>
+      <button class="btn btn-secondary" id="export-excel-btn" style="width:auto; white-space:nowrap;">📤 ${t("allRecords.exportButton")}</button>
     </div>
     <div id="by-employee-list"></div>
-
-    <div class="card" style="margin-top:14px;">
-      <h2><span>💰 ${t("payrollBatch.title")}</span></h2>
-      <div class="panel-subtitle">${t("payrollBatch.hint")}</div>
-      <div class="field-row" style="align-items:flex-end;">
-        <div class="field">
-          <label>${t("payrollBatch.month")}</label>
-          <input type="month" id="pb-month" value="${currentMonthStr()}" />
-        </div>
-        <div class="field">
-          <label>${t("payrollBatch.payDay")}</label>
-          <select id="pb-payday">
-            <option value="1">${t("payrollBatch.payDay1")}</option>
-            <option value="16">${t("payrollBatch.payDay16")}</option>
-          </select>
-        </div>
-      </div>
-      <div id="pb-preview"></div>
-      <button class="btn btn-primary btn-block" id="pb-export-btn">📤 ${t("payrollBatch.exportButton")}</button>
-    </div>
   `;
-
-  function renderPayrollBatch() {
-    const monthStr = el.querySelector("#pb-month").value || currentMonthStr();
-    const payDay = el.querySelector("#pb-payday").value || "1";
-    const rows = buildPayrollBatchRows(employees, all, payments, payDay, monthStr);
-    const skipped = employees.length - rows.length;
-    const previewEl = el.querySelector("#pb-preview");
-
-    if (rows.length === 0) {
-      previewEl.innerHTML = `<div class="empty-state">${t("payrollBatch.empty")}</div>`;
-    } else {
-      const periodSet = [...new Set(rows.map((r) => `${r.from} ~ ${r.to}`))];
-      previewEl.innerHTML = `
-        <div class="hint" style="margin:10px 0 12px;">
-          ${t("payrollBatch.periodsHint")}: ${periodSet.join(" / ")}${skipped > 0 ? " · " + t("payrollBatch.skippedHint", { count: skipped }) : ""}
-        </div>
-        <div id="pb-list"></div>
-      `;
-      el.querySelector("#pb-list").innerHTML = rows
-        .map(
-          (r) => `
-        <div class="employee-row" data-uid="${r.uid}">
-          <div style="min-width:0;">
-            <div class="name">${escapeHtml(r.name)}</div>
-            <div class="wage">${r.from} ~ ${r.to} · ${formatHours(r.hours)} ${t("records.hours")} · ${t("payrollBatch.remaining")} $${formatMoney(r.remaining)}</div>
-          </div>
-          <button class="btn btn-secondary btn-small pb-pay-btn" style="width:auto; flex-shrink:0;">💰 ${t("payments.recordPayment")}</button>
-        </div>
-      `
-        )
-        .join("");
-
-      el.querySelectorAll(".pb-pay-btn").forEach((btn) => {
-        btn.addEventListener("click", (e) => {
-          const uid = e.currentTarget.closest(".employee-row").dataset.uid;
-          const row = rows.find((r) => r.uid === uid);
-          const emp = empMap[uid];
-          openPaymentModal({ uid, name: emp.name || emp.username, hourlyWage: emp.hourlyWage || 0 }, all, {
-            from: row.from,
-            to: row.to,
-            presetAmount: row.remaining,
-            // 保存后要重新拉取 payments（不能只用外层闭包里那份旧数据重画），
-            // 所以直接重跑整个 records 页签，顺带也会刷新上面「按员工」的汇总列表
-            onSaved: () => renderRecordsTab(outerEl, profile)
-          });
-        });
-      });
-    }
-
-    el.querySelector("#pb-export-btn").onclick = () => exportPayrollExcel(rows, monthStr, payDay);
-  }
-
-  el.querySelector("#pb-month").addEventListener("change", renderPayrollBatch);
-  el.querySelector("#pb-payday").addEventListener("change", renderPayrollBatch);
-  renderPayrollBatch();
 
   let currentRows = [];
   let currentFrom = "";
   let currentTo = "";
   let preset = "thisMonth";
+
+  el.querySelector("#export-excel-btn").addEventListener("click", () => {
+    exportPayrollExcel(currentRows, currentFrom, currentTo);
+  });
 
   function setPreset(p) {
     preset = p;
@@ -1624,7 +1463,7 @@ function openEmployeeChartModal(emp, allRecords) {
 
 // ---------------- 薪酬支付（管理端） ----------------
 
-async function openPaymentModal(emp, allRecords, periodContext) {
+async function openPaymentModal(emp, allRecords) {
   const root = document.getElementById("modal-root");
 
   const totalEarned = allRecords
@@ -1635,11 +1474,6 @@ async function openPaymentModal(emp, allRecords, periodContext) {
     <div class="modal-backdrop" id="modal-backdrop">
       <div class="modal-sheet">
         <h2>💰 ${t("payments.modalTitle", { name: emp.name })}</h2>
-        ${
-          periodContext
-            ? `<div class="hint" style="margin-bottom:10px;">${t("payments.periodTagHint", { from: periodContext.from, to: periodContext.to })}</div>`
-            : ""
-        }
         <div class="summary-grid" id="pay-summary" style="margin-bottom:14px;">
           <div class="summary-box"><div class="icon">💵</div><div class="num">$${formatMoney(totalEarned)}</div><div class="label">${t("payments.totalEarned")}</div></div>
           <div class="summary-box"><div class="icon">✅</div><div class="num" id="pay-total-paid">$0.00</div><div class="label">${t("payments.totalPaid")}</div></div>
@@ -1649,7 +1483,7 @@ async function openPaymentModal(emp, allRecords, periodContext) {
         <div class="field">
           <label>${t("payments.amount")}</label>
           <div class="field-row" style="align-items:flex-end;">
-            <input type="number" min="0" step="0.01" id="pay-amount" value="${periodContext && periodContext.presetAmount > 0 ? periodContext.presetAmount.toFixed(2) : ""}" style="flex:1;" />
+            <input type="number" min="0" step="0.01" id="pay-amount" style="flex:1;" />
             <button class="btn btn-secondary btn-small" id="pay-full-btn" type="button">${t("payments.payFull")}</button>
           </div>
         </div>
@@ -1749,15 +1583,12 @@ async function openPaymentModal(emp, allRecords, periodContext) {
         amount,
         date,
         note,
-        adminUid: auth.currentUser.uid,
-        periodFrom: periodContext ? periodContext.from : null,
-        periodTo: periodContext ? periodContext.to : null
+        adminUid: auth.currentUser.uid
       });
       showToast(t("payments.saved"));
       document.getElementById("pay-amount").value = "";
       document.getElementById("pay-note").value = "";
       await refreshHistory();
-      if (periodContext && periodContext.onSaved) periodContext.onSaved();
     } catch (err) {
       errEl.textContent = authErrorMessage(err);
     } finally {
