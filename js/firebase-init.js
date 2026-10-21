@@ -10,7 +10,7 @@ import {
   sendPasswordResetEmail
 } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
 import {
-  getFirestore,
+  initializeFirestore,
   collection,
   doc,
   getDoc,
@@ -29,7 +29,9 @@ import { firebaseConfig } from "./firebase-config.js";
 
 export const app = initializeApp(firebaseConfig);
 export const auth = getAuth(app);
-export const db = getFirestore(app);
+// 默认的 Firestore 连接方式（WebChannel 流式）在某些网络（公司/酒店 WiFi、VPN、代理、部分广告拦截器）下会卡住，
+// 页面就一直停在「加载中」。开启自动检测：连不上时自动改用长轮询，更稳。
+export const db = initializeFirestore(app, { experimentalAutoDetectLongPolling: true });
 
 export {
   initializeApp,

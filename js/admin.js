@@ -573,9 +573,24 @@ function openRecordEditModal(record, onSaved) {
 
 // ---------------- 待审核 ----------------
 
+// 加载数据时加一个超时 + 失败重试界面：以前一旦请求卡住/失败，页面会永远停在灰色加载条上，什么提示都没有。
+function withTimeout(promise, ms = 20000) {
+  return Promise.race([promise, new Promise((_, reject) => setTimeout(() => reject(new Error("timeout")), ms))]);
+}
+function showLoadError(el, err, retry) {
+  el.innerHTML = `<div class="empty-state">${t("error.loadTimeout")}<div class="hint">${escapeHtml((err && err.message) || "")}</div><button class="btn btn-secondary btn-small" id="retry-load" style="margin-top:12px; width:auto;">${t("common.retry")}</button></div>`;
+  el.querySelector("#retry-load").addEventListener("click", retry);
+}
+
 async function renderApprovalsTab(el, profile) {
   el.innerHTML = skeletonRows();
-  const pending = await fetchPendingRecords();
+  let pending;
+  try {
+    pending = await withTimeout(fetchPendingRecords());
+  } catch (err) {
+    showLoadError(el, err, () => renderApprovalsTab(el, profile));
+    return;
+  }
   const peopleCount = new Set(pending.map((r) => r.uid)).size;
   const totalHours = pending.reduce((s, r) => s + (r.workedHours || 0), 0);
 
@@ -606,7 +621,13 @@ async function renderApprovalsTab(el, profile) {
 async function renderEmployeesTab(el, profile) {
   const cached = peekUsers();
   if (!cached) el.innerHTML = skeletonRows();
-  const accounts = await fetchAllUsers();
+  let accounts;
+  try {
+    accounts = await withTimeout(fetchAllUsers());
+  } catch (err) {
+    showLoadError(el, err, () => renderEmployeesTab(el, profile));
+    return;
+  }
 
   el.innerHTML = `
     <div class="card">
@@ -891,7 +912,13 @@ async function renderRecordsTab(el, profile) {
   const cachedRecords = peekRecords();
   const cachedUsers = peekUsers();
   if (!cachedRecords || !cachedUsers) el.innerHTML = skeletonRows();
-  const [all, accounts] = await Promise.all([fetchAllTimeRecords(), fetchAllUsers()]);
+  let all, accounts;
+  try {
+    [all, accounts] = await withTimeout(Promise.all([fetchAllTimeRecords(), fetchAllUsers()]));
+  } catch (err) {
+    showLoadError(el, err, () => renderRecordsTab(el, profile));
+    return;
+  }
   const empMap = {};
   accounts.forEach((e) => (empMap[e.id] = e));
   const employees = accounts.filter((e) => e.role !== "admin");

@@ -250,6 +250,8 @@ const STRINGS = {
     "payments.myTitle": "Payments",
 
     "common.loading": "Loading...",
+    "common.retry": "Retry",
+    "error.loadTimeout": "Loading is taking too long or failed. Check your connection and try again.",
 
     "toast.loggedOut": "Logged out",
 
@@ -516,6 +518,8 @@ const STRINGS = {
     "payments.myTitle": "薪酬支付",
 
     "common.loading": "加载中...",
+    "common.retry": "重试",
+    "error.loadTimeout": "加载太久或失败了，请检查网络后重试。",
 
     "toast.loggedOut": "已登出",
 
