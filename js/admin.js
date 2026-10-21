@@ -1009,8 +1009,95 @@ function exportPayrollExcel(rows, from, to) {
   setFormat(totalRowIdx, 3, "0.00");
   setFormat(totalRowIdx, 4, '"$"#,##0.00');
 
+  // ---------- 第二页：每一条记录的明细（日期/上下班时间/午休/工时/时薪/金额） ----------
+  // 金额用公式（工时 × 时薪），合计用 SUM，手动改任何一格，合计都会自动更新。
+  const detailHeader = [
+    t("allRecords.exportColName"),
+    t("allRecords.exportColFullName"),
+    t("allRecords.exportColDate"),
+    t("allRecords.exportColStart"),
+    t("allRecords.exportColEnd"),
+    t("allRecords.exportColLunch"),
+    t("allRecords.exportColHours"),
+    t("allRecords.exportColWage"),
+    t("allRecords.exportColAmount"),
+    t("allRecords.exportColNote")
+  ];
+  const dCols = detailHeader.length;
+  const detailRows = [];
+  withHours.forEach((r) => {
+    (r.records || []).forEach((rec) => {
+      detailRows.push([
+        r.name,
+        r.fullName,
+        rec.date,
+        rec.startTime || "",
+        rec.endTime || "",
+        Number(rec.lunchMinutes) || 0,
+        Number((rec.workedHours || 0).toFixed(2)),
+        Number(r.wage) || 0,
+        null,
+        rec.note || ""
+      ]);
+    });
+  });
+  const dFirst = 2;
+  const dLast = dFirst + detailRows.length - 1;
+  const dTotalIdx = dFirst + detailRows.length;
+  const dAoa = [
+    [`${t("allRecords.exportDetailSheetName")} · ${periodLabel}`, ...Array(dCols - 1).fill("")],
+    detailHeader,
+    ...detailRows,
+    [t("allRecords.exportTotal"), ...Array(dCols - 1).fill("")]
+  ];
+  const ws2 = XLSX.utils.aoa_to_sheet(dAoa);
+  ws2["!cols"] = [{ wch: 14 }, { wch: 16 }, { wch: 12 }, { wch: 8 }, { wch: 8 }, { wch: 11 }, { wch: 9 }, { wch: 10 }, { wch: 12 }, { wch: 28 }];
+  ws2["!merges"] = [{ s: { r: 0, c: 0 }, e: { r: 0, c: dCols - 1 } }];
+  ws2["!autofilter"] = { ref: XLSX.utils.encode_range({ s: { r: 1, c: 0 }, e: { r: dLast, c: dCols - 1 } }) };
+  ws2["!freeze"] = { xSplit: 0, ySplit: 2 };
+
+  const setStyle2 = (r, c, style) => {
+    const addr = XLSX.utils.encode_cell({ r, c });
+    if (ws2[addr]) ws2[addr].s = { ...(ws2[addr].s || {}), ...style };
+  };
+  const setCell2 = (r, c, cell) => {
+    ws2[XLSX.utils.encode_cell({ r, c })] = cell;
+  };
+  const hCol = XLSX.utils.encode_col(6);
+  const wCol = XLSX.utils.encode_col(7);
+  const aCol = XLSX.utils.encode_col(8);
+  detailRows.forEach((_, i) => {
+    const rowIdx = dFirst + i;
+    setCell2(rowIdx, 8, { t: "n", f: `ROUND(${hCol}${rowIdx + 1}*${wCol}${rowIdx + 1},2)` });
+  });
+  setCell2(dTotalIdx, 6, { t: "n", f: `SUM(${hCol}${dFirst + 1}:${hCol}${dLast + 1})` });
+  setCell2(dTotalIdx, 8, { t: "n", f: `SUM(${aCol}${dFirst + 1}:${aCol}${dLast + 1})` });
+
+  for (let c = 0; c < dCols; c++) {
+    setStyle2(0, c, TITLE_STYLE);
+    setStyle2(1, c, HEADER_STYLE);
+  }
+  detailRows.forEach((_, i) => {
+    const rowIdx = dFirst + i;
+    const addrH = XLSX.utils.encode_cell({ r: rowIdx, c: 6 });
+    const addrW = XLSX.utils.encode_cell({ r: rowIdx, c: 7 });
+    const addrA = XLSX.utils.encode_cell({ r: rowIdx, c: 8 });
+    if (ws2[addrH]) ws2[addrH].z = "0.00";
+    if (ws2[addrW]) ws2[addrW].z = '"$"#,##0.00';
+    if (ws2[addrA]) ws2[addrA].z = '"$"#,##0.00';
+    if (i % 2 === 1) {
+      for (let c = 0; c < dCols; c++) setStyle2(rowIdx, c, { fill: ZEBRA_FILL });
+    }
+  });
+  for (let c = 0; c < dCols; c++) setStyle2(dTotalIdx, c, c >= 6 && c <= 8 ? TOTAL_NUM_STYLE : TOTAL_STYLE);
+  const tH = XLSX.utils.encode_cell({ r: dTotalIdx, c: 6 });
+  const tA = XLSX.utils.encode_cell({ r: dTotalIdx, c: 8 });
+  if (ws2[tH]) ws2[tH].z = "0.00";
+  if (ws2[tA]) ws2[tA].z = '"$"#,##0.00';
+
   const wb = XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(wb, ws, t("allRecords.exportSheetName"));
+  XLSX.utils.book_append_sheet(wb, ws2, t("allRecords.exportDetailSheetName"));
   XLSX.writeFile(wb, `payroll-${rangeSlug}.xlsx`);
   showToast(t("allRecords.exportDone"));
 }
@@ -1126,8 +1213,13 @@ function renderByEmployeeSubTab(el, outerEl, profile, all, employees, empMap) {
         fullName: emp.fullName || emp.name || emp.username,
         zelleAccount: emp.zelleAccount || "",
         hours: byUid[emp.id] || 0,
+        wage: emp.hourlyWage || 0,
         pay: (byUid[emp.id] || 0) * (emp.hourlyWage || 0),
-        pending: pendingByUid[emp.id] || 0
+        pending: pendingByUid[emp.id] || 0,
+        // 第二页「明细」用：这个人在区间内每一条已批准的记录，按日期从早到晚
+        records: rangeRecords
+          .filter((r) => r.uid === emp.id && r.status === "approved")
+          .sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0))
       }))
       .sort((a, b) => b.hours - a.hours || a.name.localeCompare(b.name));
     currentRows = rows;
